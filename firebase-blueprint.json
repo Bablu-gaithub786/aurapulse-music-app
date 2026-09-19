@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles & VIP Status",
+      "description": "Stores logged-in user profile, subscription plan, login logs, device, and location info",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "description": "User Email Address" },
+        "displayName": { "type": "string", "description": "User Display Name" },
+        "photoURL": { "type": "string", "description": "User Profile Photo URL" },
+        "isVIP": { "type": "boolean", "description": "Whether user has active VIP pass" },
+        "planType": { "type": "string", "description": "Plan name e.g. pro_99 or lifetime" },
+        "vipPurchasedAt": { "type": "string", "description": "ISO timestamp of VIP purchase" },
+        "createdAt": { "type": "string", "description": "Account created date" },
+        "lastLoginAt": { "type": "string", "description": "Last login timestamp" },
+        "lastLoginCountry": { "type": "string", "description": "Country name derived from IP/geo" },
+        "lastLoginCity": { "type": "string", "description": "City name derived from IP/geo" },
+        "lastLoginIP": { "type": "string", "description": "Masked/Public IP" },
+        "deviceInfo": { "type": "string", "description": "User device model / browser user agent" },
+        "totalExports": { "type": "number", "description": "Total exports generated" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "login_logs": {
+      "title": "User Login Audit Logs",
+      "description": "Records every login event with time, location, IP, and device info",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User UID" },
+        "email": { "type": "string", "description": "User Email" },
+        "timestamp": { "type": "string", "description": "Timestamp of login" },
+        "city": { "type": "string", "description": "City" },
+        "country": { "type": "string", "description": "Country" },
+        "ip": { "type": "string", "description": "IP Address" },
+        "device": { "type": "string", "description": "Device / Platform details" }
+      },
+      "required": ["uid", "email", "timestamp"]
+    }
+  }
+}

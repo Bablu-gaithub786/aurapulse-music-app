@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700;900&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+/* Custom global animations */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-custom {
+  animation: spin 8s linear infinite;
+}
+
+@keyframes dynamicRgbHue {
+  0% {
+    filter: hue-rotate(0deg) drop-shadow(0 0 10px rgba(0, 240, 255, 0.85));
+  }
+  50% {
+    filter: hue-rotate(180deg) drop-shadow(0 0 14px rgba(255, 0, 127, 0.95));
+  }
+  100% {
+    filter: hue-rotate(360deg) drop-shadow(0 0 10px rgba(0, 240, 255, 0.85));
+  }
+}
+
+.animate-dynamic-rgb {
+  animation: dynamicRgbHue 5s linear infinite;
+}
+
+@keyframes spinClockwise {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-clockwise {
+  animation: spinClockwise 3.5s linear infinite;
+}
+
+@keyframes clockwiseFlowGrad {
+  0% {
+    filter: hue-rotate(0deg) drop-shadow(0 0 10px #00f0ff);
+  }
+  50% {
+    filter: hue-rotate(180deg) drop-shadow(0 0 16px #ff007f);
+  }
+  100% {
+    filter: hue-rotate(360deg) drop-shadow(0 0 10px #00f0ff);
+  }
+}
+
+.animate-clockwise-flow {
+  animation: clockwiseFlowGrad 3.5s linear infinite;
+}
+
+@keyframes toxicAuroraFlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px #39ff14) drop-shadow(0 0 18px #00ffcc);
+  }
+  50% {
+    filter: drop-shadow(0 0 16px #00ffcc) drop-shadow(0 0 24px #ccff00);
+  }
+}
+
+.animate-toxic-aurora {
+  animation: toxicAuroraFlow 4s ease-in-out infinite;
+}
+
+@keyframes sunsetFlareGlow {
+  0%, 100% {
+    filter: drop-shadow(0 0 10px #ff1a40) drop-shadow(0 0 20px #ff7700);
+  }
+  50% {
+    filter: drop-shadow(0 0 18px #ffaa00) drop-shadow(0 0 26px #ff0055);
+  }
+}
+
+.animate-sunset-flare {
+  animation: sunsetFlareGlow 3.5s ease-in-out infinite;
+}
+
+@keyframes laserBorderChase {
+  0% {
+    stroke-dashoffset: 1000;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-laser-chase {
+  stroke-dasharray: 250 150;
+  animation: laserBorderChase 4s linear infinite;
+}
+
+/* Custom sleek neon scrollbars for scrollable controls panels */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(5, 5, 10, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 0, 127, 0.15);
+  border-radius: 99px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 0, 127, 0.45);
+}
+
+/* Custom inputs styling for high-end glowing sliders */
+input[type="range"] {
+  outline: none;
+  border-radius: 99px;
+  transition: background 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 10px currentColor;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.25);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 10px currentColor;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+input[type="range"]::-moz-range-thumb:hover {
+  transform: scale(1.25);
+}

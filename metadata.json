@@ -1,0 +1,6 @@
+{
+  "name": "Premium Music Visualizer",
+  "description": "A professional-grade 360° circular audio visualizer optimized for 9:16 portrait layouts, featuring AGC mood adaptation, transient-adaptive easing, multi-layered neon glow, particle physics, and microphone input support.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
