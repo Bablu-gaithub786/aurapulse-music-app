@@ -1,7 +1,7 @@
 {
   "id": "/",
   "short_name": "AuraPulse",
-  "name": "AuraPulse - Dynamic Lights Visualizer",
+  "name": "AuraPulse - Dynamic Ligsualizer",
   "description": "Professional 360 Audio Visualizer with Dynamic Lights OS and Water Spikes",
   "start_url": "/",
   "scope": "/",
@@ -16,8 +16,8 @@
   "background_color": "#000000",
   "icons": [
     {
-      "src": "/icon.svg",
-      "type": "image/svg+xml",
+      "src": "file_00000000843881f4b79321c7f52a9a59.png,
+      "type"':'image/png,
       "sizes": "192x192 512x512",
       "purpose": "any maskable"
     }
