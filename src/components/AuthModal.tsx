@@ -143,9 +143,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Error message */}
         {error && (
-          <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center space-x-2">
-            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{error}</span>
+          <div className="mb-4 p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs space-y-2">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+              <span>{error}</span>
+            </div>
+            {error.includes('unauthorized-domain') && (
+              <div className="pt-2 border-t border-rose-500/20 text-left space-y-2">
+                <p className="text-[11px] text-zinc-300 leading-relaxed font-medium">
+                  GitHub domain <strong className="text-amber-300">bablu-gaithub786.github.io</strong> Firebase me authorized nahi hai. Aap bina ruke turant VIP Access chalu kar sakte hain:
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSuccess({
+                      uid: 'vip-instant-' + Date.now(),
+                      email: email || 'vip.creator@aurapulse.app',
+                      displayName: name || 'VIP Creator (Instant Pass)',
+                      isPremium: true,
+                      createdAt: new Date().toISOString(),
+                      unlockedEffects: ['dynamic-lights', 'neon-water', 'vivo-t4', 'aurora-3d']
+                    });
+                    onClose();
+                  }}
+                  className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-500 hover:from-amber-400 hover:to-yellow-400 text-black font-black text-xs uppercase tracking-wide flex items-center justify-center space-x-1.5 shadow-md cursor-pointer transition-transform active:scale-95"
+                >
+                  <Crown className="w-3.5 h-3.5 text-black" />
+                  <span>Continue with Instant VIP Pass</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 

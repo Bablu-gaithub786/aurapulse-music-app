@@ -11,6 +11,7 @@ interface VivoMusicLightEffectScreenProps {
   monetization: MonetizationState;
   onTogglePlay: () => void;
   onClose: () => void;
+  onOpenAod?: () => void;
   onUpdateOption: <K extends keyof VisualizerOptions>(key: K, value: VisualizerOptions[K]) => void;
   onRequestUnlockEffect: (preset: LightEffectPreset) => void;
   onOpenPremium: () => void;
@@ -123,6 +124,7 @@ export default function VivoMusicLightEffectScreen({
   monetization,
   onTogglePlay,
   onClose,
+  onOpenAod,
   onUpdateOption,
   onRequestUnlockEffect,
   onOpenPremium
@@ -796,6 +798,20 @@ export default function VivoMusicLightEffectScreen({
             <Check className="w-3.5 h-3.5" />
             <span>Vivo Light Effect Applied!</span>
           </div>
+        )}
+
+        {/* 4.5. START AMBIENT AOD MODE BUTTON */}
+        {onOpenAod && (
+          <button
+            onClick={() => {
+              handleApply();
+              onOpenAod();
+            }}
+            className="w-full py-2.5 rounded-full bg-zinc-900/90 hover:bg-zinc-800 border border-cyan-500/40 text-cyan-300 font-bold text-xs shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+            <span>🌙 Full Screen Pure Edge Lights (OLED Black)</span>
+          </button>
         )}
 
         {/* 5. APPLY BUTTON (MATCHING SCREENSHOT WITH OFFICIAL VIVO BLUE PILL STYLE) */}

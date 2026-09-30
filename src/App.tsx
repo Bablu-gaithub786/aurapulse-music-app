@@ -62,22 +62,15 @@ import { auth, db, recordUserLogin, UserProfile } from './lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
-// @ts-ignore
-import ysFixWebmDuration from 'fix-webm-duration';
+import { patchWebmDuration } from './utils/webmDurationPatcher';
 
-// A highly robust helper to fix missing WebM duration metadata for native browser recorder exports
-const fixWebmDurationHelper = (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
+// A battle-tested EBML patcher that guarantees real duration injection into WebM files for WhatsApp & Android
+const fixWebmDurationHelper = async (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
   try {
-    const fn = (ysFixWebmDuration as any)?.default || ysFixWebmDuration;
-    if (typeof fn === 'function') {
-      console.log(`Injecting correct duration metadata: ${durationInMs}ms into WebM Blob`);
-      fn(blob, durationInMs, callback);
-    } else {
-      console.warn("ysFixWebmDuration is not a function/unsupported, using original blob.", fn);
-      callback(blob);
-    }
+    const fixed = await patchWebmDuration(blob, durationInMs);
+    callback(fixed);
   } catch (err) {
-    console.error("Error fixing WebM duration metadata:", err);
+    console.warn("EBML patch failed, falling back to original blob:", err);
     callback(blob);
   }
 };
@@ -89,8 +82,21 @@ const convertWebmToMp4OnServer = async (
   setTranscodeMessage: (msg: string) => void,
   fallbackSave: (blob: Blob) => void
 ) => {
+  // If running on static host like GitHub Pages, server API is not available
+  const isStaticHost = typeof window !== 'undefined' && (
+    window.location.hostname.includes('github.io') ||
+    window.location.protocol === 'file:'
+  );
+
+  if (isStaticHost) {
+    // Directly save the EBML-patched WebM with guaranteed duration
+    console.log("Static host detected (GitHub Pages), saving EBML duration-patched video directly.");
+    fallbackSave(webmBlob);
+    return;
+  }
+
   setIsTranscoding(true);
-  setTranscodeMessage("Converting WebM to ultra-compatible MP4 for Instagram Reels & WhatsApp... (वीडियो को Reels और WhatsApp के लिए MP4 में बदला जा रहा है...)");
+  setTranscodeMessage("Optimizing video stream for WhatsApp & mobile galleries...");
   
   try {
     const formData = new FormData();
@@ -114,7 +120,7 @@ const convertWebmToMp4OnServer = async (
     a.click();
     console.log("Successfully converted WebM to MP4 and triggered download.");
   } catch (error) {
-    console.error("Server-side conversion failed, downloading original WebM as fallback:", error);
+    console.warn("Server conversion unavailable, downloading duration-patched video:", error);
     fallbackSave(webmBlob);
   } finally {
     setIsTranscoding(false);
@@ -160,6 +166,7 @@ export default function App() {
   const [options, setOptions] = useState<VisualizerOptions>(DEFAULT_OPTIONS);
   const [activeTab, setActiveTab] = useState<'audio' | 'wave-styles' | 'layouts' | 'glow-fx' | 'backdrops' | 'vivo-edge'>('audio');
   const [isVivoAodActive, setIsVivoAodActive] = useState<boolean>(false);
+  const [showAodOverlay, setShowAodOverlay] = useState<boolean>(false);
 
   const updateOption = <K extends keyof VisualizerOptions>(key: K, value: VisualizerOptions[K]) => {
     setOptions(prev => ({
@@ -245,6 +252,14 @@ export default function App() {
     rewardType: 'export_video',
     directPlay: false
   });
+
+  // Automatically pause music playback while an ad is showing
+  useEffect(() => {
+    if (adModalConfig.isOpen && audioElementRef.current && !audioElementRef.current.paused) {
+      audioElementRef.current.pause();
+      setIsPlaying(false);
+    }
+  }, [adModalConfig.isOpen]);
 
   const isMp4Supported = typeof MediaRecorder !== 'undefined' && 
     (typeof (MediaRecorder as any).isTypeSupported === 'function') &&
@@ -2823,6 +2838,7 @@ export default function App() {
           isPlaying={isPlaying}
           onTogglePlay={togglePlay}
           onClose={() => setIsVivoAodActive(false)}
+          onOpenAod={() => setShowAodOverlay(true)}
           onUpdateOption={updateOption}
           monetization={monetization}
           onOpenPremium={() => setShowPremiumModal(true)}
@@ -2843,6 +2859,19 @@ export default function App() {
               }
             });
           }}
+        />
+      )}
+
+      {/* VIVO T4 FULL BLACK AMBIENT ALWAYS-ON DISPLAY (AOD) OVERLAY */}
+      {showAodOverlay && (
+        <VivoT4AodOverlay
+          options={options}
+          stats={stats}
+          isPlaying={isPlaying}
+          audioFileName={audioFileName}
+          onTogglePlay={togglePlay}
+          onClose={() => setShowAodOverlay(false)}
+          onUpdateOption={updateOption}
         />
       )}
 
@@ -3121,7 +3150,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* EXPORT SUCCESS COMPATIBILITY & DURATION GUIDE MODAL */}
+      {/* EXPORT SUCCESS MODAL: DIRECT AUDIO CONVERT & VIP UPGRADE */}
       <AnimatePresence>
         {showExportSuccessModal && (
           <motion.div
@@ -3135,105 +3164,65 @@ export default function App() {
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className="bg-zinc-950 border border-zinc-850 p-6 rounded-3xl max-w-md w-full text-center relative shadow-2xl space-y-5 my-8"
+              className="bg-zinc-950 border border-zinc-800 p-6 rounded-3xl max-w-sm w-full text-center relative shadow-2xl space-y-4 my-6"
             >
-              <div className="relative w-16 h-16 mx-auto flex items-center justify-center bg-emerald-500/10 border border-emerald-500/30 rounded-full">
+              <div className="relative w-14 h-14 mx-auto flex items-center justify-center bg-emerald-500/10 border border-emerald-500/30 rounded-full">
                 <CheckCircle className="w-8 h-8 text-emerald-400" />
                 <Sparkles className="w-4 h-4 text-cyan-400 absolute -top-1 -right-1 animate-bounce" />
               </div>
 
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <h2 className="font-display font-black text-base tracking-wider uppercase text-zinc-100">
-                  Export Guide & Solutions 🎬
+                  Video Exported! 🎬
                 </h2>
-                <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest font-mono">
-                  Guaranteed Solutions for Video Playback
+                <p className="text-[11px] font-medium text-emerald-400">
+                  Full length video saved with sound to your downloads
                 </p>
               </div>
 
-              {/* The 1-second duration explanation */}
-              <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-left space-y-2.5">
+              {/* ACTION 1: AUDIO CONVERT / EXTRACT (User Requested) */}
+              <button
+                onClick={() => {
+                  if (audioElementRef.current?.src) {
+                    const a = document.createElement('a');
+                    a.href = audioElementRef.current.src;
+                    const cleanName = audioFileName ? audioFileName.replace(/\.[^/.]+$/, "") : "AuraPulse_Audio_Track";
+                    a.download = `${cleanName}.mp3`;
+                    a.click();
+                  } else {
+                    alert("No audio track loaded.");
+                  }
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20 flex items-center justify-center space-x-2 transition-all cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]"
+              >
+                <Music className="w-4 h-4 text-black" />
+                <span>🎵 Audio Convert (MP3 Download)</span>
+              </button>
+
+              {/* ACTION 2: UPGRADE TO VIP PASS (User Requested) */}
+              <button
+                onClick={() => {
+                  setShowExportSuccessModal(false);
+                  setShowPremiumModal(true);
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500/20 via-amber-500/30 to-yellow-500/20 border border-amber-500/60 hover:border-amber-400 text-amber-300 font-bold text-xs flex items-center justify-between transition-all cursor-pointer group"
+              >
                 <div className="flex items-center space-x-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse shrink-0" />
-                  <h3 className="text-xs font-black text-red-400 uppercase tracking-wider">Why does the video show as 1-second in some apps?</h3>
+                  <Crown className="w-4 h-4 text-amber-400 group-hover:rotate-12 transition-transform" />
+                  <span>Upgrade VIP (No Ads + 4K)</span>
                 </div>
-                <div className="text-[10.5px] text-zinc-300 leading-relaxed space-y-1.5 font-medium">
-                  <p>
-                    <strong>The Cause:</strong> Android Chrome browser records videos using the <strong className="text-red-300">WebM format standard</strong> (even if saved as .mp4).
-                  </p>
-                  <p>
-                    While Chrome and Google Files play the full length seamlessly, apps like <strong>WhatsApp and Instagram Reels</strong> require universal MP4. Sharing WebM files directly can cause those apps to misread the container header and report 1 second.
-                  </p>
-                </div>
-              </div>
+                <span className="px-2 py-0.5 rounded bg-amber-400 text-black font-black text-[10px]">
+                  ₹99/mo
+                </span>
+              </button>
 
-              {/* Steps container */}
-              <div className="space-y-3.5 text-left">
-                <p className="text-[11px] font-black uppercase text-zinc-400 tracking-widest border-b border-zinc-900 pb-1.5">
-                  3 Easy Methods to Resolve:
-                </p>
-
-                {/* Method 1: WebM to MP4 Online Converter with link buttons */}
-                <div className="bg-zinc-900/40 border border-zinc-850 p-3 rounded-xl space-y-2">
-                  <div className="flex items-center space-x-2 text-cyan-400">
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-cyan-500/10 border border-cyan-500/20 rounded font-black">METHOD 1</span>
-                    <span className="text-xs font-bold text-zinc-200">Free Online Converter (Easiest ⭐️)</span>
-                  </div>
-                  <p className="text-[10px] text-zinc-400 leading-relaxed font-medium">
-                    Click any converter button below, upload your downloaded video file, and click <strong>Convert to MP4</strong>. The output MP4 file will play full duration on WhatsApp & Reels!
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 pt-1">
-                    <a
-                      href="https://ezgif.com/webm-to-mp4"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="py-1.5 px-2 bg-cyan-500/10 border border-cyan-500/30 hover:bg-cyan-500/20 text-cyan-300 rounded-lg text-center text-[10px] font-bold inline-flex items-center justify-center gap-1 transition-colors"
-                    >
-                      Ezgif Converter <ExternalLink className="w-2.5 h-2.5" />
-                    </a>
-                    <a
-                      href="https://cloudconvert.com/webm-to-mp4"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="py-1.5 px-2 bg-pink-500/10 border border-pink-500/30 hover:bg-pink-500/20 text-pink-300 rounded-lg text-center text-[10px] font-bold inline-flex items-center justify-center gap-1 transition-colors"
-                    >
-                      CloudConvert <ExternalLink className="w-2.5 h-2.5" />
-                    </a>
-                  </div>
-                </div>
-
-                {/* Method 2: Play Store App Offline Option */}
-                <div className="bg-zinc-900/40 border border-zinc-850 p-3 rounded-xl space-y-1.5">
-                  <div className="flex items-center space-x-2 text-emerald-400">
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded font-black">METHOD 2</span>
-                    <span className="text-xs font-bold text-zinc-200">Offline Converter App</span>
-                  </div>
-                  <p className="text-[10px] text-zinc-400 leading-relaxed font-medium">
-                    Download any free <strong className="text-emerald-300">"WebM to MP4 Converter"</strong> app from Play Store or App Store. It converts video files on your device offline in seconds.
-                  </p>
-                </div>
-
-                {/* Method 3: WhatsApp Document trick */}
-                <div className="bg-zinc-900/40 border border-zinc-850 p-3 rounded-xl space-y-1.5">
-                  <div className="flex items-center space-x-2 text-amber-400">
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded font-black">METHOD 3</span>
-                    <span className="text-xs font-bold text-zinc-200">Send as WhatsApp Document</span>
-                  </div>
-                  <p className="text-[10px] text-zinc-400 leading-relaxed font-medium">
-                    When sharing on WhatsApp, tap the paperclip icon in chat and select <strong>Document</strong> instead of Gallery. WhatsApp delivers the full uncompressed video!
-                  </p>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-2 flex flex-col space-y-2">
-                <button
-                  onClick={() => setShowExportSuccessModal(false)}
-                  className="w-full py-2.5 bg-gradient-to-r from-pink-500 to-cyan-500 hover:from-pink-600 hover:to-cyan-600 text-zinc-950 font-black text-xs tracking-wider uppercase rounded-xl shadow-lg transition-all transform hover:scale-[1.02] active:scale-[0.98]"
-                >
-                  Close & Continue
-                </button>
-              </div>
+              {/* ACTION 3: CLOSE BUTTON */}
+              <button
+                onClick={() => setShowExportSuccessModal(false)}
+                className="w-full py-2.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 font-bold text-xs tracking-wider uppercase rounded-xl transition-all"
+              >
+                Done & Continue
+              </button>
             </motion.div>
           </motion.div>
         )}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Play, Sparkles, X, CheckCircle, ShieldCheck, Crown, Film, Volume2, VolumeX, AlertCircle } from 'lucide-react';
 
@@ -6,10 +6,10 @@ export interface AdModalProps {
   isOpen: boolean;
   title: string;
   description: string;
-  totalAdsRequired: number; // e.g., 1 ad for direct fast sponsor message
+  totalAdsRequired: number;
   rewardType: 'unlock_effect' | 'export_video' | 'change_song';
   targetItemName?: string;
-  directPlay?: boolean; // When true (default), automatically starts playing ad without intermediate button
+  directPlay?: boolean;
   onAdCompleted: () => void;
   onOpenPremium: () => void;
   onClose: () => void;
@@ -23,7 +23,7 @@ const SAMPLE_ADS = [
     bgGradient: "from-blue-900 via-indigo-950 to-black",
     badge: "Official Sponsor",
     themeColor: "#00f0ff",
-    duration: 5, // 5 seconds per ad
+    duration: 5,
   },
   {
     sponsor: "Spotify Premium",
@@ -57,62 +57,85 @@ export default function AdModal({
   onOpenPremium,
   onClose
 }: AdModalProps) {
-  const [currentAdIndex, setCurrentAdIndex] = useState(0);
   const isAutoAd = directPlay !== undefined ? directPlay : (rewardType === 'export_video' || rewardType === 'change_song');
   const [isWatchingAd, setIsWatchingAd] = useState(isAutoAd);
-  const [countdown, setCountdown] = useState(5);
   const [completedCount, setCompletedCount] = useState(0);
+  const [secondsRemaining, setSecondsRemaining] = useState(5);
+  const [progressPercent, setProgressPercent] = useState(0);
 
   const activeAd = SAMPLE_ADS[completedCount % SAMPLE_ADS.length];
+  const adStartTimeRef = useRef<number>(0);
+  const completedRef = useRef(completedCount);
+  completedRef.current = completedCount;
 
+  // Initialize or reset when modal opens
   useEffect(() => {
     if (isOpen) {
       setCompletedCount(0);
+      completedRef.current = 0;
       if (isAutoAd) {
         setIsWatchingAd(true);
-        setCountdown(SAMPLE_ADS[0].duration);
+        adStartTimeRef.current = Date.now();
+        setSecondsRemaining(SAMPLE_ADS[0].duration);
+        setProgressPercent(0);
       } else {
         setIsWatchingAd(false);
-        setCountdown(SAMPLE_ADS[0].duration);
+        setSecondsRemaining(SAMPLE_ADS[0].duration);
+        setProgressPercent(0);
       }
     }
   }, [isOpen, isAutoAd]);
 
+  // Timestamp-based accurate progress loop: works even if screen was turned off or tab went to sleep!
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (isWatchingAd && countdown > 0) {
-      timer = setTimeout(() => {
-        setCountdown(prev => prev - 1);
-      }, 1000);
-    } else if (isWatchingAd && countdown === 0) {
-      // Current ad completed
-      const newCompleted = completedCount + 1;
-      setCompletedCount(newCompleted);
+    if (!isOpen || !isWatchingAd) return;
 
-      if (newCompleted >= totalAdsRequired) {
-        // All required ads completed
-        setIsWatchingAd(false);
-        setTimeout(() => {
-          onAdCompleted();
-        }, 350);
-      } else {
-        if (isAutoAd) {
-          // Automatically start next ad in auto mode
-          const nextAd = SAMPLE_ADS[newCompleted % SAMPLE_ADS.length];
-          setCountdown(nextAd.duration);
-        } else {
-          // In manual button mode (dynamic lights), return to view with next ad button
-          setIsWatchingAd(false);
-        }
-      }
+    const adTotalMs = activeAd.duration * 1000;
+    if (adStartTimeRef.current === 0) {
+      adStartTimeRef.current = Date.now();
     }
 
-    return () => clearTimeout(timer);
-  }, [isWatchingAd, countdown, completedCount, totalAdsRequired, isAutoAd, onAdCompleted]);
+    const interval = setInterval(() => {
+      const elapsed = Date.now() - adStartTimeRef.current;
+      const pct = Math.min(100, (elapsed / adTotalMs) * 100);
+      const remaining = Math.max(0, Math.ceil((adTotalMs - elapsed) / 1000));
+
+      setProgressPercent(pct);
+      setSecondsRemaining(remaining);
+
+      if (elapsed >= adTotalMs) {
+        clearInterval(interval);
+        const nextCompleted = completedRef.current + 1;
+        setCompletedCount(nextCompleted);
+        completedRef.current = nextCompleted;
+
+        if (nextCompleted >= totalAdsRequired) {
+          setIsWatchingAd(false);
+          setTimeout(() => {
+            onAdCompleted();
+          }, 350);
+        } else {
+          if (isAutoAd) {
+            // Next ad
+            adStartTimeRef.current = Date.now();
+            const nextAd = SAMPLE_ADS[nextCompleted % SAMPLE_ADS.length];
+            setSecondsRemaining(nextAd.duration);
+            setProgressPercent(0);
+          } else {
+            setIsWatchingAd(false);
+          }
+        }
+      }
+    }, 100);
+
+    return () => clearInterval(interval);
+  }, [isOpen, isWatchingAd, completedCount, activeAd.duration, totalAdsRequired, isAutoAd, onAdCompleted]);
 
   const handleStartWatchAd = () => {
+    adStartTimeRef.current = Date.now();
     const nextAd = SAMPLE_ADS[completedCount % SAMPLE_ADS.length];
-    setCountdown(nextAd.duration);
+    setSecondsRemaining(nextAd.duration);
+    setProgressPercent(0);
     setIsWatchingAd(true);
   };
 
@@ -179,24 +202,22 @@ export default function AdModal({
                       key={idx}
                       className={`w-3 h-3 rounded-full border transition-all ${
                         idx < completedCount
-                          ? 'bg-cyan-400 border-cyan-400 shadow-[0_0_8px_#00f0ff]'
-                          : 'bg-zinc-800 border-zinc-700'
+                          ? 'bg-cyan-400 border-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.8)]'
+                          : 'bg-zinc-800 border-zinc-600'
                       }`}
                     />
                   ))}
                 </div>
               </div>
 
-              {/* ACTION 1: WATCH REWARDED AD */}
+              {/* ACTION 1: WATCH AD BUTTON */}
               <button
                 onClick={handleStartWatchAd}
-                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-xs tracking-wider uppercase flex items-center justify-center space-x-2 shadow-lg shadow-cyan-500/25 transition-all transform active:scale-98 cursor-pointer"
+                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-black font-black text-xs uppercase tracking-wider shadow-lg shadow-cyan-500/20 flex items-center justify-center space-x-2 transition-all cursor-pointer transform hover:scale-[1.02] active:scale-[0.98]"
               >
-                <Play className="w-4 h-4 fill-black" />
+                <Play className="w-4 h-4 fill-current" />
                 <span>
-                  {completedCount === 0
-                    ? `WATCH AD (${totalAdsRequired} ${totalAdsRequired === 1 ? 'Ad' : 'Ads'} to Unlock)`
-                    : `WATCH NEXT AD (${completedCount + 1}/${totalAdsRequired})`}
+                  {completedCount === 0 ? "Watch Short Ad (5s)" : `Watch Ad ${completedCount + 1} of ${totalAdsRequired}`}
                 </span>
               </button>
 
@@ -234,7 +255,7 @@ export default function AdModal({
                 </span>
 
                 <div className="px-2.5 py-0.5 rounded-full bg-black/60 border border-zinc-600 text-xs font-mono font-bold text-cyan-400 flex items-center space-x-1">
-                  <span>Ad ends in {countdown}s</span>
+                  <span>Ad ends in {secondsRemaining}s</span>
                 </div>
               </div>
 
@@ -260,18 +281,18 @@ export default function AdModal({
                 </div>
               </div>
 
-              {/* Countdown Progress Bar */}
-              <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              {/* Real-time Countdown Progress Bar (Timestamp Synced) */}
+              <div className="w-full h-2 bg-zinc-850 rounded-full overflow-hidden border border-zinc-700/60 p-0.5">
                 <div
-                  className="h-full bg-cyan-400 transition-all duration-1000 ease-linear"
+                  className="h-full bg-gradient-to-r from-cyan-400 to-emerald-400 rounded-full transition-all duration-100 ease-linear shadow-[0_0_10px_rgba(6,182,212,0.8)]"
                   style={{
-                    width: `${((activeAd.duration - countdown) / activeAd.duration) * 100}%`
+                    width: `${progressPercent}%`
                   }}
                 />
               </div>
 
               <div className="w-full flex items-center justify-between pt-0.5 text-[10px] text-zinc-400 font-mono">
-                <span>Auto-unlocking in {countdown}s...</span>
+                <span>Auto-unlocking in {secondsRemaining}s...</span>
                 <button
                   onClick={() => {
                     onClose();
