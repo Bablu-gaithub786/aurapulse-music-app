@@ -191,6 +191,7 @@ export default function App() {
   const [showExportSuccessModal, setShowExportSuccessModal] = useState<boolean>(false);
   const [isFullscreenPreview, setIsFullscreenPreview] = useState<boolean>(false);
   const [exportQuality, setExportQuality] = useState<'sd' | 'hd' | '4k'>('hd');
+  const [exportDurationChoice, setExportDurationChoice] = useState<'15' | '30' | '60' | 'full'>('30');
 
   // Monetization & AdMob State
   const [monetization, setMonetization] = useState<MonetizationState>(() => getMonetizationState());
@@ -337,6 +338,7 @@ export default function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const globalGainRef = useRef<GainNode | null>(null);
+  const recordingGainRef = useRef<GainNode | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -421,7 +423,9 @@ export default function App() {
     if (audioContextRef.current && options.audioSource !== 'none') {
       try {
         const dest = audioContextRef.current.createMediaStreamDestination();
-        if (globalGainRef.current) {
+        if (recordingGainRef.current) {
+          recordingGainRef.current.connect(dest);
+        } else if (globalGainRef.current) {
           globalGainRef.current.connect(dest);
         }
         const audioTracks = dest.stream.getAudioTracks();
@@ -554,9 +558,16 @@ export default function App() {
       else { targetWidth = 3840; targetHeight = 2160; }
     }
 
-    // Determine recording duration using trimmed audio bounds
+    // Determine recording duration using trimmed audio bounds and user choice
     const bounds = getEffectiveAudioBounds();
-    const totalDuration = bounds.duration;
+    let totalDuration = bounds.duration;
+    if (exportDurationChoice === '15') {
+      totalDuration = Math.min(15, bounds.duration);
+    } else if (exportDurationChoice === '30') {
+      totalDuration = Math.min(30, bounds.duration);
+    } else if (exportDurationChoice === '60') {
+      totalDuration = Math.min(60, bounds.duration);
+    }
     const startOffset = bounds.start;
 
     setIsExporting(true);
@@ -606,11 +617,13 @@ export default function App() {
       return;
     }
 
-    // Try merging actual audio from the GainNode
+    // Merge full-volume audio stream into recorded video container
     if (audioContextRef.current && options.audioSource !== 'none') {
       try {
         const dest = audioContextRef.current.createMediaStreamDestination();
-        if (globalGainRef.current) {
+        if (recordingGainRef.current) {
+          recordingGainRef.current.connect(dest);
+        } else if (globalGainRef.current) {
           globalGainRef.current.connect(dest);
         }
         const audioTracks = dest.stream.getAudioTracks();
@@ -703,7 +716,7 @@ export default function App() {
 
         // Check completion condition
         const isEnded = (options.audioSource === 'file' && audioElementRef.current)
-          ? (audioElementRef.current.ended || audioElementRef.current.currentTime >= bounds.end - 0.1 || elapsed >= totalDuration - 0.1)
+          ? (audioElementRef.current.ended || audioElementRef.current.currentTime >= (startOffset + totalDuration) - 0.1 || elapsed >= totalDuration - 0.1)
           : (elapsed >= totalDuration);
 
         if (isEnded) {
@@ -856,9 +869,10 @@ export default function App() {
   };
 
   const muteSpeakerOutput = () => {
-    if (analyserRef.current && audioContextRef.current) {
+    if (globalGainRef.current && audioContextRef.current) {
       try {
-        analyserRef.current.disconnect(audioContextRef.current.destination);
+        globalGainRef.current.gain.setValueAtTime(0, audioContextRef.current.currentTime);
+        console.log("[Export] Muted phone speaker output for silent rendering.");
       } catch (err) {
         console.warn("Mute speaker output error:", err);
       }
@@ -866,10 +880,10 @@ export default function App() {
   };
 
   const restoreSpeakerOutput = () => {
-    if (analyserRef.current && audioContextRef.current) {
+    if (globalGainRef.current && audioContextRef.current) {
       try {
-        analyserRef.current.disconnect();
-        analyserRef.current.connect(audioContextRef.current.destination);
+        globalGainRef.current.gain.setValueAtTime(isMuted ? 0 : volume, audioContextRef.current.currentTime);
+        console.log("[Export] Restored phone speaker volume.");
       } catch (err) {
         console.warn("Restore speaker output error:", err);
       }
@@ -936,9 +950,15 @@ export default function App() {
     analyser.connect(globalGain);
     globalGain.connect(ctx.destination);
 
+    // Dedicated recording gain node for silent background video exporting with 100% audio volume
+    const recordingGain = ctx.createGain();
+    recordingGain.gain.value = 1.0;
+    analyser.connect(recordingGain);
+
     audioContextRef.current = ctx;
     analyserRef.current = analyser;
     globalGainRef.current = globalGain;
+    recordingGainRef.current = recordingGain;
     sourceNodeRef.current = sourceNode;
 
     audio.onended = () => {
@@ -2965,6 +2985,39 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Export Video Duration Length Selector */}
+              <div className="bg-zinc-900/45 border border-zinc-850 p-3 rounded-xl space-y-2" id="export-duration-container">
+                <div className="flex items-center justify-between">
+                  <span className="block text-[9px] font-black uppercase text-zinc-400 tracking-wider">Video Duration Length</span>
+                  <span className="text-[8px] font-mono font-bold text-cyan-400">🔇 Silent Background Render</span>
+                </div>
+                <div className="grid grid-cols-4 gap-1.5">
+                  {([
+                    { id: '15', label: '15s', sub: 'Story' },
+                    { id: '30', label: '30s', sub: 'Status' },
+                    { id: '60', label: '60s', sub: 'Short' },
+                    { id: 'full', label: 'Full', sub: 'Track' },
+                  ] as const).map((d) => {
+                    const isSelected = exportDurationChoice === d.id;
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => setExportDurationChoice(d.id)}
+                        className={`py-2 px-1 rounded-lg border text-center transition-all cursor-pointer flex flex-col justify-center items-center ${
+                          isSelected
+                            ? 'bg-pink-500/15 border-pink-500/70 text-pink-400 shadow-sm'
+                            : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:border-zinc-800 hover:text-zinc-300'
+                        }`}
+                      >
+                        <span className="block text-[10px] font-black uppercase leading-tight">{d.label}</span>
+                        <span className="block text-[7px] font-semibold text-zinc-500 leading-none mt-0.5">{d.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="space-y-2.5">
                 {/* Option 1: Snap PNG Screenshot */}
                 <button
@@ -3011,52 +3064,19 @@ export default function App() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center space-x-1.5">
                       <span className="block text-xs font-bold text-zinc-100">
-                        Export {exportQuality === '4k' ? '4K Ultra HD' : exportQuality === 'hd' ? 'HD 1080p' : 'SD 720p'} Video
+                        Export {exportDurationChoice === 'full' ? '' : `${exportDurationChoice}s `}{exportQuality === '4k' ? '4K Ultra HD' : exportQuality === 'hd' ? 'HD 1080p' : 'SD 720p'} Video
                       </span>
                       <span className="text-[7.5px] font-mono font-black uppercase px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">
                         {monetization.isPremium ? 'VIP Instant' : exportQuality === '4k' ? '3 Ads' : exportQuality === 'hd' ? '2 Ads' : 'Free'}
                       </span>
                     </div>
-                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">Automated frame-by-frame rendering with audio sync</span>
+                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">Silent background rendering with pristine audio sync</span>
                   </div>
                 </button>
               </div>
 
-              {/* Guide Method 1: WebM to MP4 Fast Online Converter */}
-              <div className="bg-zinc-900/60 border border-zinc-850 p-3 rounded-xl space-y-2 text-left" id="export-guide-method1-card">
-                <div className="flex items-center justify-between border-b border-zinc-900 pb-1.5">
-                  <div className="flex items-center space-x-1.5 text-cyan-400">
-                    <span className="text-[8px] font-mono px-1.5 py-0.5 bg-cyan-500/10 border border-cyan-500/30 rounded font-black text-cyan-300">METHOD 1</span>
-                    <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-wide">Free MP4 Converter (WhatsApp / Reels)</span>
-                  </div>
-                </div>
-                
-                <p className="text-[9px] text-zinc-400 leading-relaxed font-medium">
-                  If video playback shows short length on WhatsApp or Reels, upload your exported file here and convert to universal MP4 in 5 seconds:
-                </p>
-
-                <div className="grid grid-cols-2 gap-2 pt-0.5">
-                  <a
-                    href="https://ezgif.com/webm-to-mp4"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="py-2 px-2 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 rounded-lg text-center text-[9.5px] font-bold inline-flex items-center justify-center gap-1 transition-all shadow-sm"
-                  >
-                    Ezgif MP4 <ExternalLink className="w-3 h-3" />
-                  </a>
-                  <a
-                    href="https://cloudconvert.com/webm-to-mp4"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="py-2 px-2 bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/30 text-pink-300 rounded-lg text-center text-[9.5px] font-bold inline-flex items-center justify-center gap-1 transition-all shadow-sm"
-                  >
-                    CloudConvert <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-              </div>
-
               <div className="text-[8px] font-mono text-zinc-600 text-center uppercase tracking-widest pt-0.5">
-                AuraPulse Audio-Visual Renderer Studio
+                AuraPulse Audio-Visual Renderer Studio • Silent Export
               </div>
             </motion.div>
           </motion.div>
