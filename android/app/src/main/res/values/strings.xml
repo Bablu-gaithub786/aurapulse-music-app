@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">AuraPulse Studio</string>
+    <string name="title_activity_main">AuraPulse Studio</string>
+    <string name="package_name">com.aurapulse.musicvisualizer</string>
+    <string name="custom_url_scheme">com.aurapulse.musicvisualizer</string>
+</resources>
