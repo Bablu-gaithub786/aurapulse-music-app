@@ -54,9 +54,30 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK Artifact
+      - name: Prepare APK file
+        run: |
+          mkdir -p output-apk
+          cp android/app/build/outputs/apk/debug/*.apk output-apk/AuraPulse.apk
+          echo "APK generated successfully:"
+          ls -la output-apk/
+
+      - name: Upload APK Artifact (ZIP contains AuraPulse.apk)
         uses: actions/upload-artifact@v4
         with:
           name: AuraPulse-Android-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: output-apk/AuraPulse.apk
           retention-days: 14
+
+      - name: Publish Direct APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          tag_name: v1.0.0-apk
+          name: "AuraPulse Android App (Latest APK)"
+          body: "Direct Android APK download for AuraPulse Music Visualizer. Download the AuraPulse.apk file directly to your phone and install."
+          files: output-apk/AuraPulse.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
