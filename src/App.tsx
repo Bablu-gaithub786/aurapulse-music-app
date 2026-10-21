@@ -63,6 +63,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { patchWebmDuration } from './utils/webmDurationPatcher';
+import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, isNativeAndroid } from './utils/nativeBridge';
 
 // A battle-tested EBML patcher that guarantees real duration injection into WebM files for WhatsApp & Android
 const fixWebmDurationHelper = async (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
@@ -82,15 +83,15 @@ const convertWebmToMp4OnServer = async (
   setTranscodeMessage: (msg: string) => void,
   fallbackSave: (blob: Blob) => void
 ) => {
-  // If running on static host like GitHub Pages, server API is not available
-  const isStaticHost = typeof window !== 'undefined' && (
+  // If running on Native Android APK or static host, direct device gallery save is used
+  const isDirectDeviceSave = typeof window !== 'undefined' && (
+    isNativeAndroid() ||
     window.location.hostname.includes('github.io') ||
     window.location.protocol === 'file:'
   );
 
-  if (isStaticHost) {
-    // Directly save the EBML-patched WebM with guaranteed duration
-    console.log("Static host detected (GitHub Pages), saving EBML duration-patched video directly.");
+  if (isDirectDeviceSave) {
+    console.log("Direct device/native save detected, saving video directly to gallery.");
     fallbackSave(webmBlob);
     return;
   }
@@ -112,13 +113,9 @@ const convertWebmToMp4OnServer = async (
     }
 
     const mp4Blob = await response.blob();
-    const url = URL.createObjectURL(mp4Blob);
-    const a = document.createElement('a');
-    a.href = url;
     const mp4Filename = filename.replace(/\.(webm|mp4)$/i, '') + '.mp4';
-    a.download = mp4Filename;
-    a.click();
-    console.log("Successfully converted WebM to MP4 and triggered download.");
+    await saveVideoToDevice(mp4Blob, mp4Filename, 'video/mp4');
+    console.log("Successfully converted WebM to MP4 and saved to gallery.");
   } catch (error) {
     console.warn("Server conversion unavailable, downloading duration-patched video:", error);
     fallbackSave(webmBlob);
@@ -191,7 +188,7 @@ export default function App() {
   const [showExportSuccessModal, setShowExportSuccessModal] = useState<boolean>(false);
   const [isFullscreenPreview, setIsFullscreenPreview] = useState<boolean>(false);
   const [exportQuality, setExportQuality] = useState<'sd' | 'hd' | '4k'>('hd');
-  const [exportDurationChoice, setExportDurationChoice] = useState<'15' | '30' | '60' | 'full'>('30');
+  const [hasOverlayPermission, setHasOverlayPermission] = useState<boolean>(true);
 
   // Monetization & AdMob State
   const [monetization, setMonetization] = useState<MonetizationState>(() => getMonetizationState());
@@ -199,6 +196,15 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [isVipAuthFlow, setIsVipAuthFlow] = useState<boolean>(false);
+
+  // Check Android Display Over Other Apps permission on mount
+  useEffect(() => {
+    if (isNativeAndroid()) {
+      checkOverlayPermission().then(granted => {
+        setHasOverlayPermission(granted);
+      });
+    }
+  }, []);
 
   // Preload all backdrop & center disc images immediately on mount for zero-latency switching
   useEffect(() => {
@@ -457,12 +463,9 @@ export default function App() {
         const blobType = recOptions.mimeType || 'video/webm';
         const blob = new Blob(recordedChunksRef.current, { type: blobType });
 
-        const saveBlob = (finalBlob: Blob) => {
-          const url = URL.createObjectURL(finalBlob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.${extension}`;
-          a.click();
+        const saveBlob = async (finalBlob: Blob) => {
+          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.${extension}`;
+          await saveVideoToDevice(finalBlob, fileName, recOptions.mimeType || 'video/mp4');
         };
 
         if (blobType.includes('webm')) {
@@ -497,12 +500,9 @@ export default function App() {
           const durationInMs = Date.now() - recordingStartTimeRef.current;
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
-          const saveBlob = (finalBlob: Blob) => {
-            const url = URL.createObjectURL(finalBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.webm`;
-            a.click();
+          const saveBlob = async (finalBlob: Blob) => {
+            const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.webm`;
+            await saveVideoToDevice(finalBlob, fileName, 'video/webm');
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -558,16 +558,9 @@ export default function App() {
       else { targetWidth = 3840; targetHeight = 2160; }
     }
 
-    // Determine recording duration using trimmed audio bounds and user choice
+    // Determine recording duration using full song / audio trimmer bounds set by user in trimmer
     const bounds = getEffectiveAudioBounds();
-    let totalDuration = bounds.duration;
-    if (exportDurationChoice === '15') {
-      totalDuration = Math.min(15, bounds.duration);
-    } else if (exportDurationChoice === '30') {
-      totalDuration = Math.min(30, bounds.duration);
-    } else if (exportDurationChoice === '60') {
-      totalDuration = Math.min(60, bounds.duration);
-    }
+    const totalDuration = bounds.duration;
     const startOffset = bounds.start;
 
     setIsExporting(true);
@@ -659,12 +652,9 @@ export default function App() {
         const blobType = recOptions.mimeType || 'video/webm';
         const blob = new Blob(recordedChunksRef.current, { type: blobType });
 
-        const saveBlob = (finalBlob: Blob) => {
-          const url = URL.createObjectURL(finalBlob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.${extension}`;
-          a.click();
+        const saveBlob = async (finalBlob: Blob) => {
+          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.${extension}`;
+          await saveVideoToDevice(finalBlob, fileName, recOptions.mimeType || 'video/mp4');
         };
 
         if (blobType.includes('webm')) {
@@ -770,12 +760,9 @@ export default function App() {
           const durationInMs = Date.now() - exportStartTime;
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
-          const saveBlob = (finalBlob: Blob) => {
-            const url = URL.createObjectURL(finalBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.webm`;
-            a.click();
+          const saveBlob = async (finalBlob: Blob) => {
+            const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.webm`;
+            await saveVideoToDevice(finalBlob, fileName, 'video/webm');
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -2530,6 +2517,30 @@ export default function App() {
           </div>
         </header>
 
+        {/* ANDROID OVERLAY PERMISSION NOTICE BAR */}
+        {isNativeAndroid() && !hasOverlayPermission && (
+          <div className="w-full bg-gradient-to-r from-amber-500/20 via-zinc-900 to-cyan-500/20 border-b border-amber-500/40 px-3 py-2 flex items-center justify-between z-30 text-xs">
+            <div className="flex items-center space-x-2 text-left">
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+              <span className="text-zinc-200 text-[10px] font-medium">
+                Allow <strong>Display over other apps</strong> permission for screen edge lights to glow over music apps.
+              </span>
+            </div>
+            <button
+              onClick={async () => {
+                await requestOverlayPermission();
+                setTimeout(async () => {
+                  const granted = await checkOverlayPermission();
+                  setHasOverlayPermission(granted);
+                }, 2000);
+              }}
+              className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-black font-bold text-[10px] shrink-0 transition-all cursor-pointer shadow-sm active:scale-95 ml-2"
+            >
+              Allow
+            </button>
+          </div>
+        )}
+
         {/* UPPER PREVIEW ZONE: Filmora Style Vertical Video Box with Aspect Ratio Framing */}
         <div className="flex-1 flex flex-col justify-center items-center p-2 overflow-hidden bg-[#030306] relative min-h-[46dvh]">
           
@@ -2858,7 +2869,6 @@ export default function App() {
           isPlaying={isPlaying}
           onTogglePlay={togglePlay}
           onClose={() => setIsVivoAodActive(false)}
-          onOpenAod={() => setShowAodOverlay(true)}
           onUpdateOption={updateOption}
           monetization={monetization}
           onOpenPremium={() => setShowPremiumModal(true)}
@@ -2985,50 +2995,15 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Export Video Duration Length Selector */}
-              <div className="bg-zinc-900/45 border border-zinc-850 p-3 rounded-xl space-y-2" id="export-duration-container">
-                <div className="flex items-center justify-between">
-                  <span className="block text-[9px] font-black uppercase text-zinc-400 tracking-wider">Video Duration Length</span>
-                  <span className="text-[8px] font-mono font-bold text-cyan-400">🔇 Silent Background Render</span>
-                </div>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {([
-                    { id: '15', label: '15s', sub: 'Story' },
-                    { id: '30', label: '30s', sub: 'Status' },
-                    { id: '60', label: '60s', sub: 'Short' },
-                    { id: 'full', label: 'Full', sub: 'Track' },
-                  ] as const).map((d) => {
-                    const isSelected = exportDurationChoice === d.id;
-                    return (
-                      <button
-                        key={d.id}
-                        type="button"
-                        onClick={() => setExportDurationChoice(d.id)}
-                        className={`py-2 px-1 rounded-lg border text-center transition-all cursor-pointer flex flex-col justify-center items-center ${
-                          isSelected
-                            ? 'bg-pink-500/15 border-pink-500/70 text-pink-400 shadow-sm'
-                            : 'bg-zinc-950 border-zinc-900 text-zinc-500 hover:border-zinc-800 hover:text-zinc-300'
-                        }`}
-                      >
-                        <span className="block text-[10px] font-black uppercase leading-tight">{d.label}</span>
-                        <span className="block text-[7px] font-semibold text-zinc-500 leading-none mt-0.5">{d.sub}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               <div className="space-y-2.5">
                 {/* Option 1: Snap PNG Screenshot */}
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     const canvas = document.getElementById('visualizer-main-canvas') as HTMLCanvasElement;
                     if (canvas) {
                       const dataUrl = canvas.toDataURL('image/png');
-                      const link = document.createElement('a');
-                      link.download = `AuraPulse_Artwork_${Date.now()}.png`;
-                      link.href = dataUrl;
-                      link.click();
+                      const fileName = `AuraPulse_Artwork_${Date.now()}.png`;
+                      await saveImageToDevice(dataUrl, fileName);
                       setShowExportModal(false);
                     } else {
                       alert('Canvas not loaded. Please play or select an option first.');
@@ -3045,7 +3020,7 @@ export default function App() {
                       <span className="block text-xs font-bold text-zinc-100">Capture PNG Snapshot</span>
                       <span className="text-[7.5px] font-mono font-black uppercase px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">1-Click</span>
                     </div>
-                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">Instant lossless high-res artwork image download to gallery</span>
+                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">Instant lossless artwork image saved directly to phone gallery</span>
                   </div>
                 </button>
 
@@ -3064,13 +3039,15 @@ export default function App() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center space-x-1.5">
                       <span className="block text-xs font-bold text-zinc-100">
-                        Export {exportDurationChoice === 'full' ? '' : `${exportDurationChoice}s `}{exportQuality === '4k' ? '4K Ultra HD' : exportQuality === 'hd' ? 'HD 1080p' : 'SD 720p'} Video
+                        Export {exportQuality === '4k' ? '4K Ultra HD' : exportQuality === 'hd' ? 'HD 1080p' : 'SD 720p'} Video
                       </span>
                       <span className="text-[7.5px] font-mono font-black uppercase px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 border border-pink-500/30">
                         {monetization.isPremium ? 'VIP Instant' : exportQuality === '4k' ? '3 Ads' : exportQuality === 'hd' ? '2 Ads' : 'Free'}
                       </span>
                     </div>
-                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">Silent background rendering with pristine audio sync</span>
+                    <span className="block text-[8.5px] text-zinc-400 font-medium mt-0.5">
+                      Full trimmed length • Lossless render saved directly to Android Gallery / Movies
+                    </span>
                   </div>
                 </button>
               </div>

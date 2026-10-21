@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { VisualizerOptions, AudioStats } from '../types';
-import { ChevronLeft, Check, Sparkles, Play, Pause, PowerOff, Sliders, Palette, Zap, Maximize2, Volume2, Gauge, RotateCw, Lock, Crown } from 'lucide-react';
+import { ChevronLeft, Check, Sparkles, Play, Pause, PowerOff, Sliders, Palette, Zap, Maximize2, Volume2, Gauge, RotateCw, Lock, Crown, ShieldAlert } from 'lucide-react';
 import VivoLeftRightEdgeLights from './VivoLeftRightEdgeLights';
 import { MonetizationState } from '../utils/monetization';
+import { checkOverlayPermission, requestOverlayPermission, isNativeAndroid } from '../utils/nativeBridge';
 
 interface VivoMusicLightEffectScreenProps {
   options: VisualizerOptions;
@@ -161,6 +162,16 @@ export default function VivoMusicLightEffectScreen({
   );
 
   const [appliedToast, setAppliedToast] = useState<boolean>(false);
+  const [hasOverlayPermission, setHasOverlayPermission] = useState<boolean>(true);
+  const isNative = isNativeAndroid();
+
+  useEffect(() => {
+    if (isNative) {
+      checkOverlayPermission().then(granted => {
+        setHasOverlayPermission(granted);
+      });
+    }
+  }, [isNative]);
 
   const activePreset = LIGHT_PRESETS.find(p => p.id === selectedPresetId) || LIGHT_PRESETS[0];
 
@@ -182,7 +193,19 @@ export default function VivoMusicLightEffectScreen({
     }
   };
 
-  const handleApply = () => {
+  const handleApply = async () => {
+    // If running in Native Android APK and overlay permission is missing, request it!
+    if (isNative && selectedPresetId !== 'none') {
+      const granted = await checkOverlayPermission();
+      if (!granted) {
+        await requestOverlayPermission();
+        setTimeout(async () => {
+          const rechecked = await checkOverlayPermission();
+          setHasOverlayPermission(rechecked);
+        }, 1500);
+      }
+    }
+
     if (selectedPresetId === 'none') {
       onUpdateOption('ambientEdgeEnabled', false);
       onUpdateOption('ambientEdgePreset', 'none');
@@ -800,18 +823,38 @@ export default function VivoMusicLightEffectScreen({
           </div>
         )}
 
-        {/* 4.5. START AMBIENT AOD MODE BUTTON */}
-        {onOpenAod && (
-          <button
-            onClick={() => {
-              handleApply();
-              onOpenAod();
-            }}
-            className="w-full py-2.5 rounded-full bg-zinc-900/90 hover:bg-zinc-800 border border-cyan-500/40 text-cyan-300 font-bold text-xs shadow-md transition-all flex items-center justify-center space-x-2 cursor-pointer active:scale-98"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-            <span>🌙 Full Screen Pure Edge Lights (OLED Black)</span>
-          </button>
+        {/* 4.5. ANDROID SYSTEM OVERLAY PERMISSION ROW */}
+        {isNative && (
+          <div className="w-full p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 flex items-center justify-between text-xs">
+            <div className="flex items-center space-x-2 text-left">
+              <ShieldAlert className={`w-4 h-4 shrink-0 ${hasOverlayPermission ? 'text-emerald-400' : 'text-amber-400'}`} />
+              <div>
+                <span className="block text-zinc-200 font-bold text-[11px]">Display Over Other Apps</span>
+                <span className="block text-[9px] text-zinc-400">
+                  {hasOverlayPermission ? 'Permission granted • Glow over other music apps active' : 'Permission required for background edge lights'}
+                </span>
+              </div>
+            </div>
+            {!hasOverlayPermission ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  await requestOverlayPermission();
+                  setTimeout(async () => {
+                    const granted = await checkOverlayPermission();
+                    setHasOverlayPermission(granted);
+                  }, 1500);
+                }}
+                className="px-3 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-300 font-bold text-[10px] transition-all cursor-pointer shrink-0"
+              >
+                Allow
+              </button>
+            ) : (
+              <span className="px-2 py-1 rounded-md bg-emerald-500/20 text-emerald-400 font-bold text-[9px] border border-emerald-500/40 shrink-0">
+                Active
+              </span>
+            )}
+          </div>
         )}
 
         {/* 5. APPLY BUTTON (MATCHING SCREENSHOT WITH OFFICIAL VIVO BLUE PILL STYLE) */}

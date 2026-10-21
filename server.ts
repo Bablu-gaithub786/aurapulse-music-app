@@ -8,7 +8,9 @@ import os from "os";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const portArgIndex = process.argv.indexOf('--port');
+  const portFromArg = portArgIndex !== -1 ? Number(process.argv[portArgIndex + 1]) : null;
+  const PORT = Number(process.env.PORT) || portFromArg || 3000;
 
   // Use temporary directory for uploads and outputs
   const upload = multer({ dest: os.tmpdir() });
