@@ -35,6 +35,8 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: android
 
       - name: Install Node dependencies
         run: npm install --legacy-peer-deps
