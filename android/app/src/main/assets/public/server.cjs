@@ -31,7 +31,9 @@ var import_fs = __toESM(require("fs"), 1);
 var import_os = __toESM(require("os"), 1);
 async function startServer() {
   const app = (0, import_express.default)();
-  const PORT = 3e3;
+  const portArgIndex = process.argv.indexOf("--port");
+  const portFromArg = portArgIndex !== -1 ? Number(process.argv[portArgIndex + 1]) : null;
+  const PORT = Number(process.env.PORT) || portFromArg || 3e3;
   const upload = (0, import_multer.default)({ dest: import_os.default.tmpdir() });
   app.post("/api/convert-to-mp4", upload.single("video"), (req, res) => {
     if (!req.file) {

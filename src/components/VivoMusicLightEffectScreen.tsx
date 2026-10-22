@@ -3,7 +3,7 @@ import { VisualizerOptions, AudioStats } from '../types';
 import { ChevronLeft, Check, Sparkles, Play, Pause, PowerOff, Sliders, Palette, Zap, Maximize2, Volume2, Gauge, RotateCw, Lock, Crown, ShieldAlert } from 'lucide-react';
 import VivoLeftRightEdgeLights from './VivoLeftRightEdgeLights';
 import { MonetizationState } from '../utils/monetization';
-import { checkOverlayPermission, requestOverlayPermission, isNativeAndroid } from '../utils/nativeBridge';
+import { checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid } from '../utils/nativeBridge';
 
 interface VivoMusicLightEffectScreenProps {
   options: VisualizerOptions;
@@ -207,9 +207,21 @@ export default function VivoMusicLightEffectScreen({
     }
 
     if (selectedPresetId === 'none') {
+      if (isNative) {
+        stopSystemEdgeOverlay().catch(() => {});
+      }
       onUpdateOption('ambientEdgeEnabled', false);
       onUpdateOption('ambientEdgePreset', 'none');
     } else {
+      if (isNative) {
+        startSystemEdgeOverlay({
+          preset: selectedPresetId,
+          color: customColor,
+          thickness: thicknessPx,
+          speed: speedVal,
+          mode: lightMode
+        }).catch(err => console.warn('Overlay start error:', err));
+      }
       onUpdateOption('ambientEdgeEnabled', true);
       onUpdateOption('ambientEdgePreset', selectedPresetId as any);
       onUpdateOption('ambientEdgeWidth', thicknessPx);

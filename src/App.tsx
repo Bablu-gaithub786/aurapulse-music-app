@@ -63,7 +63,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { patchWebmDuration } from './utils/webmDurationPatcher';
-import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, isNativeAndroid } from './utils/nativeBridge';
+import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid } from './utils/nativeBridge';
 
 // A battle-tested EBML patcher that guarantees real duration injection into WebM files for WhatsApp & Android
 const fixWebmDurationHelper = async (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
@@ -81,7 +81,8 @@ const convertWebmToMp4OnServer = async (
   filename: string,
   setIsTranscoding: (val: boolean) => void,
   setTranscodeMessage: (msg: string) => void,
-  fallbackSave: (blob: Blob) => void
+  fallbackSave: (blob: Blob) => void,
+  durationInMs: number = 0
 ) => {
   // If running on Native Android APK or static host, direct device gallery save is used
   const isDirectDeviceSave = typeof window !== 'undefined' && (
@@ -91,7 +92,7 @@ const convertWebmToMp4OnServer = async (
   );
 
   if (isDirectDeviceSave) {
-    console.log("Direct device/native save detected, saving video directly to gallery.");
+    console.log(`Direct device/native save detected, saving video (${durationInMs}ms) directly to gallery.`);
     fallbackSave(webmBlob);
     return;
   }
@@ -114,7 +115,7 @@ const convertWebmToMp4OnServer = async (
 
     const mp4Blob = await response.blob();
     const mp4Filename = filename.replace(/\.(webm|mp4)$/i, '') + '.mp4';
-    await saveVideoToDevice(mp4Blob, mp4Filename, 'video/mp4');
+    await saveVideoToDevice(mp4Blob, mp4Filename, 'video/mp4', durationInMs);
     console.log("Successfully converted WebM to MP4 and saved to gallery.");
   } catch (error) {
     console.warn("Server conversion unavailable, downloading duration-patched video:", error);
@@ -205,6 +206,34 @@ export default function App() {
       });
     }
   }, []);
+
+  // Sync Android System Edge Overlay when running natively so lights glow over other apps and home screen
+  useEffect(() => {
+    if (isNativeAndroid()) {
+      if (options.ambientEdgeEnabled && options.ambientEdgePreset && options.ambientEdgePreset !== 'none') {
+        checkOverlayPermission().then(granted => {
+          if (granted) {
+            startSystemEdgeOverlay({
+              preset: options.ambientEdgePreset,
+              color: options.ambientEdgeColor || '#00f0ff',
+              thickness: options.ambientEdgeWidth || 6,
+              speed: options.ambientEdgeSpeed || 3,
+              mode: options.ambientEdgeMode || (options.ambientEdgePreset?.startsWith('vivo-') ? 'vivo-music' : 'all-edges')
+            }).catch(e => console.warn('Overlay start error:', e));
+          }
+        });
+      } else {
+        stopSystemEdgeOverlay().catch(() => {});
+      }
+    }
+  }, [
+    options.ambientEdgeEnabled,
+    options.ambientEdgePreset,
+    options.ambientEdgeColor,
+    options.ambientEdgeWidth,
+    options.ambientEdgeSpeed,
+    options.ambientEdgeMode
+  ]);
 
   // Preload all backdrop & center disc images immediately on mount for zero-latency switching
   useEffect(() => {
@@ -317,15 +346,20 @@ export default function App() {
   const [waveformPeaks, setWaveformPeaks] = useState<number[]>(() => generateSongStructurePeaks(80));
   const [spikeLayout, setSpikeLayout] = useState<'center' | 'bottom'>('center');
 
+  const exactAudioDurationRef = useRef<number>(0);
+
   // Helper to calculate effective audio bounds (trimmed or full)
   const getEffectiveAudioBounds = () => {
-    const total = trackDuration || (audioElementRef.current?.duration) || 15;
+    const total = exactAudioDurationRef.current 
+      || trackDuration 
+      || (audioElementRef.current && isFinite(audioElementRef.current.duration) && audioElementRef.current.duration > 0 ? audioElementRef.current.duration : 0) 
+      || 30;
     if (!isTrimEnabled) {
       return { start: 0, end: total, duration: total };
     }
     const start = Math.max(0, Math.min(trimStart, total - 0.5));
     const end = (trimEnd > start) ? Math.min(trimEnd, total) : total;
-    const duration = Math.max(0.5, end - start);
+    const duration = Math.max(1.0, end - start);
     return { start, end, duration };
   };
 
@@ -458,24 +492,25 @@ export default function App() {
       };
 
       recorder.onstop = () => {
-        const durationInMs = Date.now() - recordingStartTimeRef.current;
-        const extension = recOptions.mimeType?.includes('mp4') ? 'mp4' : 'webm';
-        const blobType = recOptions.mimeType || 'video/webm';
-        const blob = new Blob(recordedChunksRef.current, { type: blobType });
+        const durationInMs = Math.max(1000, Date.now() - recordingStartTimeRef.current);
+        const cleanMime = recOptions.mimeType?.includes('mp4') ? 'video/mp4' : 'video/webm';
+        const extension = cleanMime === 'video/mp4' ? 'mp4' : 'webm';
+        const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.${extension}`;
-          await saveVideoToDevice(finalBlob, fileName, recOptions.mimeType || 'video/mp4');
+          await saveVideoToDevice(finalBlob, fileName, cleanMime, durationInMs);
         };
 
-        if (blobType.includes('webm')) {
+        if (cleanMime.includes('webm')) {
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
             convertWebmToMp4OnServer(
               fixedBlob,
               `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`,
               setIsTranscoding,
               setTranscodeMessage,
-              saveBlob
+              saveBlob,
+              durationInMs
             );
           });
         } else {
@@ -502,7 +537,7 @@ export default function App() {
 
           const saveBlob = async (finalBlob: Blob) => {
             const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.webm`;
-            await saveVideoToDevice(finalBlob, fileName, 'video/webm');
+            await saveVideoToDevice(finalBlob, fileName, 'video/webm', durationInMs);
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -511,7 +546,8 @@ export default function App() {
               `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`,
               setIsTranscoding,
               setTranscodeMessage,
-              saveBlob
+              saveBlob,
+              durationInMs
             );
           });
         };
@@ -647,24 +683,25 @@ export default function App() {
           return;
         }
 
-        const durationInMs = Date.now() - exportStartTime;
-        const extension = recOptions.mimeType?.includes('mp4') ? 'mp4' : 'webm';
-        const blobType = recOptions.mimeType || 'video/webm';
-        const blob = new Blob(recordedChunksRef.current, { type: blobType });
+        const durationInMs = Math.max(Date.now() - exportStartTime, Math.round(totalDuration * 1000));
+        const cleanMime = recOptions.mimeType?.includes('mp4') ? 'video/mp4' : 'video/webm';
+        const extension = cleanMime === 'video/mp4' ? 'mp4' : 'webm';
+        const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.${extension}`;
-          await saveVideoToDevice(finalBlob, fileName, recOptions.mimeType || 'video/mp4');
+          await saveVideoToDevice(finalBlob, fileName, cleanMime, durationInMs);
         };
 
-        if (blobType.includes('webm')) {
+        if (cleanMime.includes('webm')) {
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
             convertWebmToMp4OnServer(
               fixedBlob,
               `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
               setIsTranscoding,
               setTranscodeMessage,
-              saveBlob
+              saveBlob,
+              durationInMs
             );
           });
         } else {
@@ -692,22 +729,35 @@ export default function App() {
       }
 
       // Track progress
-      const startTime = Date.now();
+      const exportWallStartTime = Date.now();
       const progressTimer = setInterval(() => {
-        let elapsed = 0;
-        if (options.audioSource === 'file' && audioElementRef.current) {
-          elapsed = Math.max(0, audioElementRef.current.currentTime - startOffset);
-        } else {
-          elapsed = (Date.now() - startTime) / 1000;
+        const wallElapsedSec = (Date.now() - exportWallStartTime) / 1000;
+
+        // Startup grace period: during the first 1.5 seconds, audio is seeking/priming
+        if (wallElapsedSec < 1.5) {
+          const startupPct = Math.min(5, Math.floor((wallElapsedSec / totalDuration) * 100));
+          setExportProgress(startupPct);
+          return;
         }
 
-        const pct = Math.min(100, Math.floor((elapsed / totalDuration) * 100));
+        let effectiveElapsed = wallElapsedSec;
+        if (options.audioSource === 'file' && audioElementRef.current) {
+          const curTime = audioElementRef.current.currentTime;
+          if (curTime >= startOffset && (curTime - startOffset) <= totalDuration + 2) {
+            effectiveElapsed = Math.max(wallElapsedSec - 0.5, curTime - startOffset);
+          }
+        }
+
+        const pct = Math.min(100, Math.floor((effectiveElapsed / totalDuration) * 100));
         setExportProgress(pct);
 
-        // Check completion condition
-        const isEnded = (options.audioSource === 'file' && audioElementRef.current)
-          ? (audioElementRef.current.ended || audioElementRef.current.currentTime >= (startOffset + totalDuration) - 0.1 || elapsed >= totalDuration - 0.1)
-          : (elapsed >= totalDuration);
+        // Completion condition: MUST have recorded for at least totalDuration - 0.25s,
+        // or audio naturally ended after at least 85% of totalDuration elapsed
+        const isEnded = (wallElapsedSec >= (totalDuration - 0.25)) || (
+          options.audioSource === 'file' && audioElementRef.current &&
+          wallElapsedSec >= (totalDuration * 0.85) &&
+          (audioElementRef.current.ended || audioElementRef.current.currentTime >= (startOffset + totalDuration - 0.3))
+        );
 
         if (isEnded) {
           clearInterval(progressTimer);
@@ -732,7 +782,7 @@ export default function App() {
             if (!isExportCancelledRef.current) {
               setShowExportSuccessModal(true);
             }
-          }, 250);
+          }, 350);
         }
       }, 150);
 
@@ -757,12 +807,12 @@ export default function App() {
             return;
           }
 
-          const durationInMs = Date.now() - exportStartTime;
+          const durationInMs = Math.max(Date.now() - exportStartTime, Math.round(totalDuration * 1000));
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
           const saveBlob = async (finalBlob: Blob) => {
             const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.webm`;
-            await saveVideoToDevice(finalBlob, fileName, 'video/webm');
+            await saveVideoToDevice(finalBlob, fileName, 'video/webm', durationInMs);
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -771,7 +821,8 @@ export default function App() {
               `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
               setIsTranscoding,
               setTranscodeMessage,
-              saveBlob
+              saveBlob,
+              durationInMs
             );
           });
         };
@@ -789,38 +840,51 @@ export default function App() {
           setIsPlaying(true);
         }
 
-        const startTime = Date.now();
+        const fallbackWallStartTime = Date.now();
         const progressTimer = setInterval(() => {
-          let elapsed = 0;
-          if (options.audioSource === 'file' && audioElementRef.current) {
-            elapsed = Math.max(0, audioElementRef.current.currentTime - startOffset);
-          } else {
-            elapsed = (Date.now() - startTime) / 1000;
+          const wallElapsedSec = (Date.now() - fallbackWallStartTime) / 1000;
+
+          if (wallElapsedSec < 1.5) {
+            const startupPct = Math.min(5, Math.floor((wallElapsedSec / totalDuration) * 100));
+            setExportProgress(startupPct);
+            return;
           }
 
-          const pct = Math.min(100, Math.floor((elapsed / totalDuration) * 100));
+          let effectiveElapsed = wallElapsedSec;
+          if (options.audioSource === 'file' && audioElementRef.current) {
+            const curTime = audioElementRef.current.currentTime;
+            if (curTime >= startOffset && (curTime - startOffset) <= totalDuration + 2) {
+              effectiveElapsed = Math.max(wallElapsedSec - 0.5, curTime - startOffset);
+            }
+          }
+
+          const pct = Math.min(100, Math.floor((effectiveElapsed / totalDuration) * 100));
           setExportProgress(pct);
 
-          const isEnded = (options.audioSource === 'file' && audioElementRef.current)
-            ? (audioElementRef.current.ended || audioElementRef.current.currentTime >= bounds.end - 0.1 || elapsed >= totalDuration - 0.1)
-            : (elapsed >= totalDuration);
+          const isEnded = (wallElapsedSec >= (totalDuration - 0.25)) || (
+            options.audioSource === 'file' && audioElementRef.current &&
+            wallElapsedSec >= (totalDuration * 0.85) &&
+            (audioElementRef.current.ended || audioElementRef.current.currentTime >= (startOffset + totalDuration - 0.3))
+          );
 
           if (isEnded) {
             clearInterval(progressTimer);
-            if (recorder && recorder.state !== 'inactive') {
-              recorder.stop();
-            }
-            if (audioElementRef.current) {
-              audioElementRef.current.pause();
-              audioElementRef.current.currentTime = startOffset;
-            }
-            setIsPlaying(false);
-            restoreSpeakerOutput();
-            setOptions(prev => ({ ...prev, exportDimensions: undefined }));
-            setIsExporting(false);
-            if (!isExportCancelledRef.current) {
-              setShowExportSuccessModal(true);
-            }
+            setTimeout(() => {
+              if (recorder && recorder.state !== 'inactive') {
+                recorder.stop();
+              }
+              if (audioElementRef.current) {
+                audioElementRef.current.pause();
+                audioElementRef.current.currentTime = startOffset;
+              }
+              setIsPlaying(false);
+              restoreSpeakerOutput();
+              setOptions(prev => ({ ...prev, exportDimensions: undefined }));
+              setIsExporting(false);
+              if (!isExportCancelledRef.current) {
+                setShowExportSuccessModal(true);
+              }
+            }, 350);
           }
         }, 150);
 
@@ -1171,6 +1235,15 @@ export default function App() {
         return Math.max(0.05, Math.min(1.0, scaled));
       });
 
+      const exactDur = decodedData.duration;
+      if (exactDur && isFinite(exactDur) && exactDur > 0) {
+        exactAudioDurationRef.current = exactDur;
+        setTrackDuration(exactDur);
+        setDurationFormatted(formatTime(exactDur));
+        setTrimStart(0);
+        setTrimEnd(exactDur);
+      }
+
       setWaveformPeaks(peaks);
       audioCtx.close();
     } catch (e) {
@@ -1185,7 +1258,8 @@ export default function App() {
       audioElementRef.current.onloadedmetadata = () => {
         if (audioElementRef.current) {
           const d = audioElementRef.current.duration;
-          if (d && !isNaN(d) && isFinite(d)) {
+          if (d && !isNaN(d) && isFinite(d) && d > 0) {
+            exactAudioDurationRef.current = d;
             setTrackDuration(d);
             setDurationFormatted(formatTime(d));
             setTrimStart(0);
@@ -1197,7 +1271,8 @@ export default function App() {
       audioElementRef.current.ondurationchange = () => {
         if (audioElementRef.current) {
           const d = audioElementRef.current.duration;
-          if (d && !isNaN(d) && isFinite(d)) {
+          if (d && !isNaN(d) && isFinite(d) && d > 0) {
+            exactAudioDurationRef.current = d;
             setTrackDuration(d);
             setDurationFormatted(formatTime(d));
             setTrimStart(0);

@@ -70,16 +70,79 @@ public class NativeBridgePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void startSystemEdgeOverlay(PluginCall call) {
+        Context context = getContext();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+            call.reject("Overlay permission not granted. Please allow Display Over Other Apps first.");
+            return;
+        }
+
+        String preset = call.getString("preset", "dynamic-rainbow");
+        String color = call.getString("color", "#00f0ff");
+        int thickness = call.getInt("thickness", 6);
+        int speed = call.getInt("speed", 3);
+        String mode = call.getString("mode", "all-edges");
+
+        Intent serviceIntent = new Intent(context, EdgeLightingService.class);
+        serviceIntent.setAction(EdgeLightingService.ACTION_START);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_PRESET, preset);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_COLOR, color);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_THICKNESS, thickness);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_SPEED, speed);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_MODE, mode);
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Failed to start EdgeLightingService: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopSystemEdgeOverlay(PluginCall call) {
+        try {
+            Context context = getContext();
+            Intent serviceIntent = new Intent(context, EdgeLightingService.class);
+            serviceIntent.setAction(EdgeLightingService.ACTION_STOP);
+            context.stopService(serviceIntent);
+
+            JSObject ret = new JSObject();
+            ret.put("stopped", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Failed to stop EdgeLightingService: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
     public void saveVideoToGallery(PluginCall call) {
         String base64Data = call.getString("base64Data");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType", "video/mp4");
+        long durationMs = 0;
+        try {
+            if (call.hasOption("durationMs")) {
+                durationMs = call.getLong("durationMs");
+            }
+        } catch (Exception ignored) {
+            try {
+                durationMs = call.getInt("durationMs", 0);
+            } catch (Exception ignored2) {}
+        }
 
         if (base64Data == null || fileName == null) {
             call.reject("base64Data and fileName are required");
             return;
         }
 
+        long finalDurationMs = durationMs;
         new Thread(() -> {
             try {
                 // Remove data:video/...;base64, prefix if present
@@ -92,11 +155,16 @@ public class NativeBridgePlugin extends Plugin {
                 Context context = getContext();
                 Uri savedUri = null;
 
+                String cleanMime = mimeType != null && mimeType.contains("webm") ? "video/webm" : "video/mp4";
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
-                    values.put(MediaStore.Video.Media.MIME_TYPE, mimeType);
+                    values.put(MediaStore.Video.Media.MIME_TYPE, cleanMime);
                     values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AuraPulse");
+                    if (finalDurationMs > 0) {
+                        values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
+                    }
                     values.put(MediaStore.Video.Media.IS_PENDING, 1);
 
                     Uri collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
@@ -111,6 +179,9 @@ public class NativeBridgePlugin extends Plugin {
                         }
                         values.clear();
                         values.put(MediaStore.Video.Media.IS_PENDING, 0);
+                        if (finalDurationMs > 0) {
+                            values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
+                        }
                         context.getContentResolver().update(savedUri, values, null, null);
                     }
                 } else {
@@ -124,7 +195,7 @@ public class NativeBridgePlugin extends Plugin {
                         fos.flush();
                     }
                     savedUri = Uri.fromFile(file);
-                    MediaScannerConnection.scanFile(context, new String[]{file.getAbsolutePath()}, new String[]{mimeType}, null);
+                    MediaScannerConnection.scanFile(context, new String[]{file.getAbsolutePath()}, new String[]{cleanMime}, null);
                 }
 
                 new Handler(Looper.getMainLooper()).post(() -> {

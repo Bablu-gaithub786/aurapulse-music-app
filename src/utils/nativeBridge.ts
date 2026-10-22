@@ -3,7 +3,9 @@ import { Capacitor } from '@capacitor/core';
 interface NativeBridgePluginInterface {
   checkOverlayPermission: () => Promise<{ granted: boolean }>;
   requestOverlayPermission: () => Promise<{ requested?: boolean; alreadyGranted?: boolean }>;
-  saveVideoToGallery: (options: { base64Data: string; fileName: string; mimeType: string }) => Promise<{ success: boolean; fileName: string; uri: string }>;
+  startSystemEdgeOverlay: (options: { preset: string; color: string; thickness: number; speed: number; mode: string }) => Promise<{ started: boolean }>;
+  stopSystemEdgeOverlay: () => Promise<{ stopped: boolean }>;
+  saveVideoToGallery: (options: { base64Data: string; fileName: string; mimeType: string; durationMs?: number }) => Promise<{ success: boolean; fileName: string; uri: string }>;
   saveImageToGallery: (options: { base64Data: string; fileName: string }) => Promise<{ success: boolean; fileName: string; uri: string }>;
 }
 
@@ -42,6 +44,42 @@ export const requestOverlayPermission = async (): Promise<boolean> => {
   }
 };
 
+export const startSystemEdgeOverlay = async (options: {
+  preset?: string;
+  color?: string;
+  thickness?: number;
+  speed?: number;
+  mode?: string;
+}): Promise<boolean> => {
+  const bridge = getNativeBridge();
+  if (!bridge) return false;
+  try {
+    const res = await bridge.startSystemEdgeOverlay({
+      preset: options.preset || 'dynamic-rainbow',
+      color: options.color || '#00f0ff',
+      thickness: options.thickness || 6,
+      speed: options.speed || 3,
+      mode: options.mode || 'all-edges'
+    });
+    return !!res?.started;
+  } catch (err) {
+    console.error('Failed to start system edge overlay:', err);
+    return false;
+  }
+};
+
+export const stopSystemEdgeOverlay = async (): Promise<boolean> => {
+  const bridge = getNativeBridge();
+  if (!bridge) return false;
+  try {
+    const res = await bridge.stopSystemEdgeOverlay();
+    return !!res?.stopped;
+  } catch (err) {
+    console.error('Failed to stop system edge overlay:', err);
+    return false;
+  }
+};
+
 const blobToBase64 = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -57,17 +95,30 @@ const blobToBase64 = (blob: Blob): Promise<string> => {
 export const saveVideoToDevice = async (
   videoBlob: Blob,
   fileName: string,
-  mimeType: string = 'video/mp4'
+  rawMimeType: string = 'video/mp4',
+  durationMs: number = 0
 ): Promise<boolean> => {
+  const isWebm = (videoBlob.type && videoBlob.type.includes('webm')) || rawMimeType.includes('webm') || fileName.endsWith('.webm');
+  const cleanMimeType = isWebm ? 'video/webm' : 'video/mp4';
+
+  // Ensure fileName extension strictly matches container format
+  let finalFileName = fileName;
+  if (isWebm && !finalFileName.endsWith('.webm')) {
+    finalFileName = finalFileName.replace(/\.[^/.]+$/, "") + '.webm';
+  } else if (!isWebm && !finalFileName.endsWith('.mp4')) {
+    finalFileName = finalFileName.replace(/\.[^/.]+$/, "") + '.mp4';
+  }
+
   const bridge = getNativeBridge();
   if (bridge) {
     try {
-      console.log('Using NativeBridge to save video directly into Android Gallery / Movies...');
+      console.log(`Using NativeBridge to save video (${durationMs}ms, ${cleanMimeType}) directly into Android Gallery / Movies...`);
       const base64Data = await blobToBase64(videoBlob);
       const res = await bridge.saveVideoToGallery({
         base64Data,
-        fileName,
-        mimeType
+        fileName: finalFileName,
+        mimeType: cleanMimeType,
+        durationMs: Math.round(durationMs)
       });
       return !!res?.success;
     } catch (err) {
@@ -80,7 +131,7 @@ export const saveVideoToDevice = async (
     const url = URL.createObjectURL(videoBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = fileName;
+    a.download = finalFileName;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {
