@@ -2520,7 +2520,13 @@ export default function App() {
       <div className="w-full max-w-md h-full flex flex-col bg-[#05050a] relative overflow-hidden border-x border-zinc-900 shadow-2xl animate-fade-in" id="editor-container">
         
         {/* UPPER ZONE: Dedicated Non-Scrollable Header */}
-        <header className="h-12 border-b border-zinc-900/60 flex items-center justify-between px-4 shrink-0 bg-zinc-950/40 backdrop-blur-md z-10">
+        <header 
+          className="border-b border-zinc-900/60 flex items-center justify-between px-4 shrink-0 bg-zinc-950/80 backdrop-blur-md z-10"
+          style={{ 
+            paddingTop: 'max(env(safe-area-inset-top, 0px), 38px)',
+            paddingBottom: '10px'
+          }}
+        >
           <div className="flex items-center space-x-2">
             <div className="w-6 h-6 rounded-lg bg-gradient-to-tr from-pink-500 to-cyan-500 flex items-center justify-center shadow-md shadow-pink-500/10">
               <Disc className="w-3.5 h-3.5 text-white animate-[spin_4s_linear_infinite]" />
@@ -2919,7 +2925,7 @@ export default function App() {
           {/* Tab Sub-panels (compact vertical layouts with small gaps, safe area bottom padding) */}
           <div 
             className="flex-1 overflow-y-auto p-3.5 space-y-4 text-xs select-none scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent"
-            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 16px) + 12px)' }}
+            style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 56px)' }}
             id="active-sub-panel"
           >
             {activeTab === 'audio' && renderAudioPanel()}

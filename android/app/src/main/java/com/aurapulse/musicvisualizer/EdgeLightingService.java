@@ -6,8 +6,10 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ServiceInfo;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -20,7 +22,9 @@ import android.graphics.Shader;
 import android.graphics.SweepGradient;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -41,7 +45,25 @@ public class EdgeLightingService extends Service {
 
     private WindowManager windowManager;
     private EdgeLightView overlayView;
+    private WindowManager.LayoutParams currentParams;
     private boolean isOverlayAttached = false;
+
+    private PowerManager.WakeLock wakeLock;
+    private boolean isReceiverRegistered = false;
+
+    // BroadcastReceiver to trigger Always-On Display (AOD) mode when hardware screen turns off
+    private final BroadcastReceiver screenStateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            String action = intent.getAction();
+            if (Intent.ACTION_SCREEN_OFF.equals(action)) {
+                enableScreenOffAodMode();
+            } else if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
+                disableScreenOffAodMode();
+            }
+        }
+    };
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -53,6 +75,13 @@ public class EdgeLightingService extends Service {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         createNotificationChannel();
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_USER_PRESENT);
+        registerReceiver(screenStateReceiver, filter);
+        isReceiverRegistered = true;
     }
 
     @Override
@@ -119,9 +148,13 @@ public class EdgeLightingService extends Service {
                 layoutFlag = WindowManager.LayoutParams.TYPE_PHONE;
             }
 
-            WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
+            // Query physical real screen dimensions so bottom borders reach the absolute physical edge of the glass
+            DisplayMetrics dm = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getRealMetrics(dm);
+
+            currentParams = new WindowManager.LayoutParams(
+                    dm.widthPixels,
+                    dm.heightPixels,
                     layoutFlag,
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                             | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -129,18 +162,76 @@ public class EdgeLightingService extends Service {
                             | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                     PixelFormat.TRANSLUCENT
             );
-            params.gravity = Gravity.TOP | Gravity.START;
+            currentParams.gravity = Gravity.TOP | Gravity.START;
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                currentParams.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
             }
 
             try {
-                windowManager.addView(overlayView, params);
+                windowManager.addView(overlayView, currentParams);
                 isOverlayAttached = true;
             } catch (Exception e) {
                 e.printStackTrace();
             }
+        } else if (currentParams != null) {
+            // Re-sync physical display bounds on rotation or display change
+            DisplayMetrics dm = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getRealMetrics(dm);
+            currentParams.width = dm.widthPixels;
+            currentParams.height = dm.heightPixels;
+            try {
+                windowManager.updateViewLayout(overlayView, currentParams);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void enableScreenOffAodMode() {
+        if (overlayView == null || windowManager == null || currentParams == null) return;
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (wakeLock == null && pm != null) {
+                wakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "AuraPulse:EdgeLightsAOD"
+                );
+            }
+            if (wakeLock != null && !wakeLock.isHeld()) {
+                wakeLock.acquire(15 * 60 * 1000L); // 15 min safeguard
+            }
+
+            // Draw OLED pure black backdrop on locked screen with shining borders
+            overlayView.setAodBlackBackdrop(true);
+
+            currentParams.flags |= (WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+
+            windowManager.updateViewLayout(overlayView, currentParams);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void disableScreenOffAodMode() {
+        if (overlayView == null || windowManager == null || currentParams == null) return;
+        try {
+            if (wakeLock != null && wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+
+            // Restore transparent overlay over apps
+            overlayView.setAodBlackBackdrop(false);
+
+            currentParams.flags &= ~(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+
+            windowManager.updateViewLayout(overlayView, currentParams);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
@@ -154,6 +245,7 @@ public class EdgeLightingService extends Service {
             } finally {
                 isOverlayAttached = false;
                 overlayView = null;
+                currentParams = null;
             }
         }
     }
@@ -161,6 +253,15 @@ public class EdgeLightingService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (isReceiverRegistered) {
+            try {
+                unregisterReceiver(screenStateReceiver);
+            } catch (Exception ignored) {}
+            isReceiverRegistered = false;
+        }
+        if (wakeLock != null && wakeLock.isHeld()) {
+            wakeLock.release();
+        }
         removeOverlay();
     }
 
@@ -207,7 +308,7 @@ public class EdgeLightingService extends Service {
         }
 
         builder.setContentTitle("AuraPulse Edge Lights Active")
-                .setContentText("Displaying edge glow over apps and home screen")
+                .setContentText("Displaying edge glow over apps and screen off AOD")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(contentPending)
                 .setOngoing(true);
@@ -236,6 +337,7 @@ public class EdgeLightingService extends Service {
         private float thicknessDp = 6f;
         private int speed = 3;
         private boolean isSidesOnly = false;
+        private boolean isAodBlackBackdrop = false;
 
         public EdgeLightView(Context context) {
             super(context);
@@ -249,6 +351,11 @@ public class EdgeLightingService extends Service {
             borderPaint.setStrokeCap(Paint.Cap.ROUND);
 
             startAnimation();
+        }
+
+        public void setAodBlackBackdrop(boolean enabled) {
+            this.isAodBlackBackdrop = enabled;
+            invalidate();
         }
 
         public void updateParams(String preset, String colorHex, int thickness, int speedVal, String mode) {
@@ -300,6 +407,11 @@ public class EdgeLightingService extends Service {
             int height = getHeight();
             if (width <= 0 || height <= 0) return;
 
+            // When in Screen-Off AOD mode, fill pure OLED black (#000000) so AMOLED display stays black
+            if (isAodBlackBackdrop) {
+                canvas.drawColor(Color.BLACK);
+            }
+
             float density = getResources().getDisplayMetrics().density;
             float strokeW = thicknessDp * density;
             float glowW = strokeW * 2.8f;
@@ -319,7 +431,9 @@ public class EdgeLightingService extends Service {
         }
 
         private void drawAllBorders(Canvas canvas, int width, int height, float halfStroke) {
-            float cornerRadius = 40f * getResources().getDisplayMetrics().density;
+            // Proportional smooth corner curve that hugs curved smartphone displays
+            float cornerRadius = 32f * getResources().getDisplayMetrics().density;
+            // Draw rectangle from (halfStroke, halfStroke) all the way to (width - halfStroke, height - halfStroke)
             RectF rect = new RectF(halfStroke, halfStroke, width - halfStroke, height - halfStroke);
 
             int[] colors;
@@ -362,10 +476,10 @@ public class EdgeLightingService extends Service {
 
             borderPaint.setShader(sweep);
             glowPaint.setShader(sweep);
-            glowPaint.setAlpha(130);
+            glowPaint.setAlpha(140);
             borderPaint.setAlpha(255);
 
-            // Draw fixed rounded rectangle on screen edges (NEVER rotate the canvas itself!)
+            // Draw fixed rounded rectangle on screen edges (corners follow screen curvature)
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, glowPaint);
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint);
         }
@@ -390,7 +504,7 @@ public class EdgeLightingService extends Service {
 
             borderPaint.setShader(gradient);
             glowPaint.setShader(gradient);
-            glowPaint.setAlpha(140);
+            glowPaint.setAlpha(150);
             borderPaint.setAlpha(255);
 
             // Left Edge

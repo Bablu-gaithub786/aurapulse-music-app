@@ -276,7 +276,10 @@ export default function VivoMusicLightEffectScreen({
     <div className="fixed inset-0 z-50 bg-[#000000] text-white flex flex-col justify-between p-3 select-none font-sans overflow-hidden animate-fade-in h-[100dvh]">
       
       {/* 1. TOP NAVIGATION HEADER */}
-      <div className="w-full max-w-md mx-auto flex items-center justify-between pt-1 pb-1 shrink-0 z-30 relative">
+      <div 
+        className="w-full max-w-md mx-auto flex items-center justify-between pb-1 shrink-0 z-30 relative"
+        style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 38px)' }}
+      >
         <button
           onClick={onClose}
           className="px-2.5 py-1.5 text-white hover:text-zinc-200 transition-colors flex items-center space-x-1 justify-center cursor-pointer rounded-full bg-zinc-900/90 border border-zinc-700/80 shadow-md active:scale-95"
@@ -603,7 +606,10 @@ export default function VivoMusicLightEffectScreen({
       </div>
 
       {/* 4. BOTTOM CONTROLS (EXACT VIVO T4 THUMBNAIL CARDS & APPLY BUTTON) */}
-      <div className="w-full max-w-md mx-auto space-y-2 shrink-0 z-20 pt-1">
+      <div 
+        className="w-full max-w-md mx-auto space-y-2 shrink-0 z-20 pt-1"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 48px)' }}
+      >
         
         {activeTab === 'presets' ? (
           /* PRESET CARDS HORIZONTAL SCROLLER (MATCHING SCREENSHOT 1 & 2) */
