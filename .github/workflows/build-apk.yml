@@ -22,16 +22,16 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Set up Java 17
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platforms;android-34 build-tools;34.0.0'
+          packages: 'platforms;android-36 platforms;android-34 build-tools;35.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -70,8 +70,7 @@ jobs:
 
       - name: Publish Direct APK to GitHub Releases
         uses: softprops/action-gh-release@v2
-        continue-on-error: true
-        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
         with:
           tag_name: v1.0.0-apk
           name: "AuraPulse Android App (Latest APK)"
@@ -79,5 +78,6 @@ jobs:
           files: output-apk/AuraPulse.apk
           draft: false
           prerelease: false
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
