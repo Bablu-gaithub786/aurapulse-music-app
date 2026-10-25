@@ -34,6 +34,7 @@ public class AodEdgeLightingActivity extends Activity {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null && (ACTION_DISMISS_AOD.equals(intent.getAction())
+                    || Intent.ACTION_SCREEN_OFF.equals(intent.getAction())
                     || Intent.ACTION_USER_PRESENT.equals(intent.getAction()))) {
                 dismissAod();
             }
@@ -57,17 +58,14 @@ public class AodEdgeLightingActivity extends Activity {
         Window window = getWindow();
         window.setBackgroundDrawableResource(android.R.color.black);
 
-        // Modern Android API 27+ setShowWhenLocked and setTurnScreenOn
+        // Modern Android API 27+ setShowWhenLocked (safe for lockscreen display without forcing screen wake)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
-            setTurnScreenOn(true);
         }
 
-        // WindowManager flags to wake the screen and display over keyguard
+        // WindowManager flags to display over keyguard when screen is already on
         int flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
                 | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-                | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
@@ -81,18 +79,6 @@ public class AodEdgeLightingActivity extends Activity {
 
         // Hide navigation bars and status bar for complete edge-to-edge glow
         hideSystemUi();
-
-        // Keep CPU awake while AOD edge lighting is active
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (pm != null) {
-                wakeLock = pm.newWakeLock(
-                        PowerManager.PARTIAL_WAKE_LOCK,
-                        "AuraPulse:AodActivityWakeLock"
-                );
-                wakeLock.acquire(10 * 60 * 1000L); // 10 min safeguard
-            }
-        } catch (Exception ignored) {}
 
         // Extract effect configuration from Intent
         Intent intent = getIntent();
@@ -108,9 +94,10 @@ public class AodEdgeLightingActivity extends Activity {
         aodView.updateParams(preset, color, thickness, speed, mode);
         setContentView(aodView);
 
-        // Register receiver for unlock events
+        // Register receiver for dismiss events (e.g. screen off or user unlock)
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_DISMISS_AOD);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_USER_PRESENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(dismissReceiver, filter, Context.RECEIVER_NOT_EXPORTED);

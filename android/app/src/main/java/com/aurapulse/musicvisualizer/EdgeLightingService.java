@@ -40,7 +40,7 @@ public class EdgeLightingService extends Service {
     public static final String EXTRA_SPEED = "extra_speed";
     public static final String EXTRA_MODE = "extra_mode";
 
-    private static final String CHANNEL_ID = "aurapulse_edge_lights_channel";
+    private static final String CHANNEL_ID = "aurapulse_edge_lights_v2";
     private static final int NOTIFICATION_ID = 78601;
 
     private WindowManager windowManager;
@@ -57,16 +57,25 @@ public class EdgeLightingService extends Service {
     private int currentSpeed = 3;
     private String currentMode = "all-edges";
 
-    // BroadcastReceiver to trigger Always-On Display (AOD) mode when hardware screen turns off
+    // BroadcastReceiver to pause edge glow when screen is off to save battery, and resume when screen turns on
     private final BroadcastReceiver screenStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent == null) return;
             String action = intent.getAction();
             if (Intent.ACTION_SCREEN_OFF.equals(action)) {
-                enableScreenOffAodMode();
+                // When hardware power button is pressed or screen times out, RESPECT the screen off!
+                // Pause animation and hide view to save 100% battery and NEVER wake screen back up!
+                if (overlayView != null) {
+                    overlayView.stopAnimation();
+                    overlayView.setVisibility(View.GONE);
+                }
             } else if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
-                disableScreenOffAodMode();
+                // When screen is turned on by user, resume RGB edge lighting glow
+                if (overlayView != null) {
+                    overlayView.setVisibility(View.VISIBLE);
+                    overlayView.startAnimation();
+                }
             }
         }
     };
@@ -97,6 +106,12 @@ public class EdgeLightingService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            removeOverlay();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } else {
+                stopForeground(true);
+            }
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -249,11 +264,12 @@ public class EdgeLightingService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
-                    "Edge Lighting Overlay",
-                    NotificationManager.IMPORTANCE_MIN
+                    "Dynamic RGB Edge Lighting",
+                    NotificationManager.IMPORTANCE_LOW
             );
-            channel.setDescription("Shows active AuraPulse edge lighting over other apps");
-            channel.setShowBadge(false);
+            channel.setDescription("Shows active AuraPulse edge lighting and cancel controls");
+            channel.setShowBadge(true);
+            channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
                 manager.createNotificationChannel(channel);
@@ -287,16 +303,21 @@ public class EdgeLightingService extends Service {
             builder = new Notification.Builder(this);
         }
 
-        builder.setContentTitle("AuraPulse Edge Lights Active")
-                .setContentText("Displaying edge glow over apps and screen off AOD")
+        builder.setContentTitle("✨ AuraPulse Dynamic Lights ON")
+                .setContentText("RGB edge lighting active continuously. Tap button to turn off.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(contentPending)
                 .setOngoing(true);
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            builder.setVisibility(Notification.VISIBILITY_PUBLIC);
+            builder.setCategory(Notification.CATEGORY_SERVICE);
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
             builder.addAction(
                     android.R.drawable.ic_menu_close_clear_cancel,
-                    "Turn Off",
+                    "❌ Cancel / Turn Off Lights",
                     stopPending
             );
         }

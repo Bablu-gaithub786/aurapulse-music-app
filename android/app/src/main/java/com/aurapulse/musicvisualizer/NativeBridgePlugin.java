@@ -12,6 +12,7 @@ import android.os.Looper;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.Log;
 import android.widget.Toast;
 
 import com.getcapacitor.JSObject;
@@ -189,16 +190,44 @@ public class NativeBridgePlugin extends Plugin {
                 Context context = getContext();
                 Uri savedUri = null;
 
-                String cleanMime = mimeType != null && mimeType.contains("webm") ? "video/webm" : "video/mp4";
+                String cleanMime = "video/mp4";
+                String finalFileName = fileName;
+                if (finalFileName.endsWith(".webm")) {
+                    finalFileName = finalFileName.substring(0, finalFileName.length() - 5) + ".mp4";
+                } else if (!finalFileName.endsWith(".mp4")) {
+                    finalFileName = finalFileName + ".mp4";
+                }
 
-                // Unconditionally patch WebM binary duration if container is WebM
-                if (cleanMime.contains("webm") && finalDurationMs > 0) {
-                    videoBytes = patchWebmDurationBytes(videoBytes, finalDurationMs);
+                // If input is WebM (EBML header 0x1A 0x45 0xDF 0xA3), transcode to universal MP4 with AAC audio!
+                boolean isWebm = (videoBytes.length > 4 && videoBytes[0] == 0x1a && videoBytes[1] == 0x45 && videoBytes[2] == (byte) 0xdf && videoBytes[3] == (byte) 0xa3);
+                if (isWebm) {
+                    try {
+                        File convertedMp4 = UniversalVideoTranscoder.transcodeWebmToMp4(context, videoBytes, finalFileName, finalDurationMs);
+                        if (convertedMp4 != null && convertedMp4.exists() && convertedMp4.length() > 0) {
+                            byte[] mp4Bytes = new byte[(int) convertedMp4.length()];
+                            try (java.io.FileInputStream fis = new java.io.FileInputStream(convertedMp4)) {
+                                int totalRead = 0;
+                                while (totalRead < mp4Bytes.length) {
+                                    int read = fis.read(mp4Bytes, totalRead, mp4Bytes.length - totalRead);
+                                    if (read < 0) break;
+                                    totalRead += read;
+                                }
+                            }
+                            videoBytes = mp4Bytes;
+                            cleanMime = "video/mp4";
+                            convertedMp4.delete();
+                        }
+                    } catch (Exception transcodeErr) {
+                        Log.w("NativeBridge", "Hardware transcode fallback, applying direct container fix: " + transcodeErr.getMessage());
+                        if (finalDurationMs > 0) {
+                            videoBytes = patchWebmDurationBytes(videoBytes, finalDurationMs);
+                        }
+                    }
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
-                    values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Video.Media.DISPLAY_NAME, finalFileName);
                     values.put(MediaStore.Video.Media.MIME_TYPE, cleanMime);
                     values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AuraPulse");
                     if (finalDurationMs > 0) {
@@ -230,7 +259,7 @@ public class NativeBridgePlugin extends Plugin {
                     if (!moviesDir.exists()) {
                         moviesDir.mkdirs();
                     }
-                    File file = new File(moviesDir, fileName);
+                    File file = new File(moviesDir, finalFileName);
                     try (FileOutputStream fos = new FileOutputStream(file)) {
                         fos.write(videoBytes);
                         fos.flush();
@@ -250,7 +279,7 @@ public class NativeBridgePlugin extends Plugin {
 
                 JSObject ret = new JSObject();
                 ret.put("success", true);
-                ret.put("fileName", fileName);
+                ret.put("fileName", finalFileName);
                 ret.put("uri", savedUri != null ? savedUri.toString() : "");
                 call.resolve(ret);
 

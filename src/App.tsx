@@ -498,8 +498,8 @@ export default function App() {
         const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
 
         const saveBlob = async (finalBlob: Blob) => {
-          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.${extension}`;
-          await saveVideoToDevice(finalBlob, fileName, cleanMime, durationInMs);
+          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`;
+          await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
         };
 
         if (cleanMime.includes('webm')) {
@@ -689,8 +689,8 @@ export default function App() {
         const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
 
         const saveBlob = async (finalBlob: Blob) => {
-          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.${extension}`;
-          await saveVideoToDevice(finalBlob, fileName, cleanMime, durationInMs);
+          const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
+          await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
         };
 
         if (cleanMime.includes('webm')) {
@@ -811,8 +811,8 @@ export default function App() {
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
           const saveBlob = async (finalBlob: Blob) => {
-            const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.webm`;
-            await saveVideoToDevice(finalBlob, fileName, 'video/webm', durationInMs);
+            const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
+            await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
