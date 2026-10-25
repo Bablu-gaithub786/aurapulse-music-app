@@ -30,7 +30,6 @@
             android:name=".AodEdgeLightingActivity"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:showWhenLocked="true"
-            android:turnScreenOn="true"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:exported="false"
