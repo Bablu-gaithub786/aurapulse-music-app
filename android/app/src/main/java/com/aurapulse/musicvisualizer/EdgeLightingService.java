@@ -51,6 +51,12 @@ public class EdgeLightingService extends Service {
     private PowerManager.WakeLock wakeLock;
     private boolean isReceiverRegistered = false;
 
+    private String currentPreset = "dynamic-rainbow";
+    private String currentColor = "#00f0ff";
+    private int currentThickness = 6;
+    private int currentSpeed = 3;
+    private String currentMode = "all-edges";
+
     // BroadcastReceiver to trigger Always-On Display (AOD) mode when hardware screen turns off
     private final BroadcastReceiver screenStateReceiver = new BroadcastReceiver() {
         @Override
@@ -106,6 +112,12 @@ public class EdgeLightingService extends Service {
         int thickness = intent != null ? intent.getIntExtra(EXTRA_THICKNESS, 6) : 6;
         int speed = intent != null ? intent.getIntExtra(EXTRA_SPEED, 3) : 3;
         String mode = intent != null ? intent.getStringExtra(EXTRA_MODE) : "all-edges";
+
+        currentPreset = preset;
+        currentColor = color;
+        currentThickness = thickness;
+        currentSpeed = speed;
+        currentMode = mode;
 
         Notification notification = buildForegroundNotification();
         try {
@@ -179,49 +191,25 @@ public class EdgeLightingService extends Service {
     }
 
     private void enableScreenOffAodMode() {
-        if (overlayView == null || windowManager == null || currentParams == null) return;
         try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (wakeLock == null && pm != null) {
-                wakeLock = pm.newWakeLock(
-                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
-                        "AuraPulse:EdgeLightsAOD"
-                );
-            }
-            if (wakeLock != null && !wakeLock.isHeld()) {
-                wakeLock.acquire(15 * 60 * 1000L); // 15 min safeguard
-            }
-
-            // Draw OLED pure black backdrop on locked screen with shining borders
-            overlayView.setAodBlackBackdrop(true);
-
-            currentParams.flags |= (WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                    | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-
-            windowManager.updateViewLayout(overlayView, currentParams);
+            // Launch AodEdgeLightingActivity which has setShowWhenLocked(true) & setTurnScreenOn(true)
+            // to illuminate the screen borders in pure black when the power button is pressed!
+            Intent aodIntent = new Intent(this, AodEdgeLightingActivity.class);
+            aodIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            aodIntent.putExtra(EXTRA_PRESET, currentPreset);
+            aodIntent.putExtra(EXTRA_COLOR, currentColor);
+            aodIntent.putExtra(EXTRA_THICKNESS, currentThickness);
+            aodIntent.putExtra(EXTRA_SPEED, currentSpeed);
+            aodIntent.putExtra(EXTRA_MODE, currentMode);
+            startActivity(aodIntent);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
     private void disableScreenOffAodMode() {
-        if (overlayView == null || windowManager == null || currentParams == null) return;
         try {
-            if (wakeLock != null && wakeLock.isHeld()) {
-                wakeLock.release();
-            }
-
-            // Restore transparent overlay over apps
-            overlayView.setAodBlackBackdrop(false);
-
-            currentParams.flags &= ~(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                    | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
-                    | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
-
-            windowManager.updateViewLayout(overlayView, currentParams);
+            AodEdgeLightingActivity.dismissIfActive();
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -317,7 +305,7 @@ public class EdgeLightingService extends Service {
     }
 
     // Custom View that renders the edge lighting
-    private static class EdgeLightView extends View {
+    public static class EdgeLightView extends View {
         private final Paint borderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Matrix shaderMatrix = new Matrix();

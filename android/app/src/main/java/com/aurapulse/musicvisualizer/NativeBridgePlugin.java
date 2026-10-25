@@ -121,20 +121,54 @@ public class NativeBridgePlugin extends Plugin {
         }
     }
 
+    private static byte[] patchWebmDurationBytes(byte[] videoBytes, long durationMs) {
+        if (videoBytes == null || videoBytes.length < 32 || durationMs <= 0) {
+            return videoBytes;
+        }
+        try {
+            int limit = Math.min(videoBytes.length - 12, 16384);
+            // 1. Search for existing Duration element (0x44 0x89)
+            for (int i = 0; i < limit; i++) {
+                if (videoBytes[i] == 0x44 && videoBytes[i + 1] == (byte) 0x89) {
+                    byte len = videoBytes[i + 2];
+                    if (len == (byte) 0x84) { // Float32 (4 bytes)
+                        int floatBits = Float.floatToIntBits((float) durationMs);
+                        videoBytes[i + 3] = (byte) ((floatBits >>> 24) & 0xff);
+                        videoBytes[i + 4] = (byte) ((floatBits >>> 16) & 0xff);
+                        videoBytes[i + 5] = (byte) ((floatBits >>> 8) & 0xff);
+                        videoBytes[i + 6] = (byte) (floatBits & 0xff);
+                        return videoBytes;
+                    } else if (len == (byte) 0x88) { // Float64 (8 bytes)
+                        long doubleBits = Double.doubleToLongBits((double) durationMs);
+                        for (int k = 0; k < 8; k++) {
+                            videoBytes[i + 3 + k] = (byte) ((doubleBits >>> (56 - k * 8)) & 0xff);
+                        }
+                        return videoBytes;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return videoBytes;
+    }
+
     @PluginMethod
     public void saveVideoToGallery(PluginCall call) {
         String base64Data = call.getString("base64Data");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType", "video/mp4");
+        
         long durationMs = 0;
         try {
-            if (call.hasOption("durationMs")) {
-                durationMs = call.getLong("durationMs");
+            Double d = call.getDouble("durationMs");
+            if (d != null && d > 0) {
+                durationMs = d.longValue();
             }
-        } catch (Exception ignored) {
+        } catch (Exception ignored) {}
+
+        if (durationMs <= 0) {
             try {
                 durationMs = call.getInt("durationMs", 0);
-            } catch (Exception ignored2) {}
+            } catch (Exception ignored) {}
         }
 
         if (base64Data == null || fileName == null) {
@@ -157,6 +191,11 @@ public class NativeBridgePlugin extends Plugin {
 
                 String cleanMime = mimeType != null && mimeType.contains("webm") ? "video/webm" : "video/mp4";
 
+                // Unconditionally patch WebM binary duration if container is WebM
+                if (cleanMime.contains("webm") && finalDurationMs > 0) {
+                    videoBytes = patchWebmDurationBytes(videoBytes, finalDurationMs);
+                }
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.Video.Media.DISPLAY_NAME, fileName);
@@ -164,6 +203,7 @@ public class NativeBridgePlugin extends Plugin {
                     values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AuraPulse");
                     if (finalDurationMs > 0) {
                         values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
+                        values.put(MediaStore.MediaColumns.DURATION, finalDurationMs);
                     }
                     values.put(MediaStore.Video.Media.IS_PENDING, 1);
 
@@ -181,6 +221,7 @@ public class NativeBridgePlugin extends Plugin {
                         values.put(MediaStore.Video.Media.IS_PENDING, 0);
                         if (finalDurationMs > 0) {
                             values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
+                            values.put(MediaStore.MediaColumns.DURATION, finalDurationMs);
                         }
                         context.getContentResolver().update(savedUri, values, null, null);
                     }
@@ -196,6 +237,11 @@ public class NativeBridgePlugin extends Plugin {
                     }
                     savedUri = Uri.fromFile(file);
                     MediaScannerConnection.scanFile(context, new String[]{file.getAbsolutePath()}, new String[]{cleanMime}, null);
+                }
+
+                // Scan file so Android Gallery indexer updates duration immediately
+                if (savedUri != null) {
+                    MediaScannerConnection.scanFile(context, new String[]{savedUri.getPath()}, new String[]{cleanMime}, null);
                 }
 
                 new Handler(Looper.getMainLooper()).post(() -> {
