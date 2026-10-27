@@ -63,6 +63,7 @@ jobs:
       - name: Publish Direct APK to GitHub Releases
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event_name == 'workflow_dispatch'
+        continue-on-error: true
         with:
           tag_name: v1.0.0-apk
           name: "AuraPulse Android App (Latest APK)"

@@ -392,8 +392,11 @@ public class UniversalVideoTranscoder {
                             ByteBuffer encInBuf = encoder.getInputBuffer(encInIdx);
                             if (encInBuf != null) {
                                 encInBuf.clear();
+                                int bytesToCopy = Math.min(encInBuf.remaining(), decInfo.size);
+                                decBuf.position(decInfo.offset);
+                                decBuf.limit(decInfo.offset + bytesToCopy);
                                 encInBuf.put(decBuf);
-                                encoder.queueInputBuffer(encInIdx, 0, info.size, info.presentationTimeUs, eos ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0);
+                                encoder.queueInputBuffer(encInIdx, 0, bytesToCopy, decInfo.presentationTimeUs, eos ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0);
                             }
                         }
                     } else if (eos) {
