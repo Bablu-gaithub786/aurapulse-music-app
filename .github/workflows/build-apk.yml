@@ -12,6 +12,9 @@ jobs:
   build-apk:
     name: Build Android APK
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -27,7 +30,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Install Node dependencies
         run: npm install --legacy-peer-deps
@@ -37,6 +39,13 @@ jobs:
 
       - name: Sync Capacitor Android project
         run: npx cap sync android
+
+      - name: Configure Android SDK Location & Accept Licenses
+        run: |
+          mkdir -p android
+          echo "sdk.dir=/usr/local/lib/android/sdk" > android/local.properties
+          mkdir -p /usr/local/lib/android/sdk/licenses || true
+          printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a532e303d725e8b5933b4d7702c\n" > /usr/local/lib/android/sdk/licenses/android-sdk-license
 
       - name: Grant execute permission for gradlew
         working-directory: android
