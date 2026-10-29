@@ -46,6 +46,10 @@ jobs:
           echo "sdk.dir=/usr/local/lib/android/sdk" > android/local.properties
           mkdir -p /usr/local/lib/android/sdk/licenses || true
           printf "24333f8a63b6825ea9c5514f83c2829b004d1fee\nd56f5187479451eabf01fb78af6dfcb131a6481e\n84831b9409646a532e303d725e8b5933b4d7702c\n" > /usr/local/lib/android/sdk/licenses/android-sdk-license
+          if [ -d "$ANDROID_HOME/platforms/android-36.0" ] && [ ! -d "$ANDROID_HOME/platforms/android-36" ]; then
+            ln -s "$ANDROID_HOME/platforms/android-36.0" "$ANDROID_HOME/platforms/android-36"
+          fi
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" || true
 
       - name: Grant execute permission for gradlew
         working-directory: android
