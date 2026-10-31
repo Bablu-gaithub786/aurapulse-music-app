@@ -96,7 +96,7 @@ public class UniversalVideoTranscoder {
                 return false;
             }
 
-            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MP4);
+            muxer = new MediaMuxer(outputFile.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
 
             int muxerVideoTrack = -1;
             int muxerAudioTrack = -1;
