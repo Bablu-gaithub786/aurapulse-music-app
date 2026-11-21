@@ -63,7 +63,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { patchWebmDuration } from './utils/webmDurationPatcher';
-import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid } from './utils/nativeBridge';
+import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid, isEdgeOverlayActive } from './utils/nativeBridge';
 
 // A battle-tested EBML patcher that guarantees real duration injection into WebM files for WhatsApp & Android
 const fixWebmDurationHelper = async (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
@@ -84,7 +84,9 @@ const convertWebmToMp4OnServer = async (
   fallbackSave: (blob: Blob) => void,
   durationInMs: number = 0
 ) => {
-  // If running on Native Android APK or static host, direct device gallery save is used
+  // If running on Native Android APK or static host, direct device gallery save is used.
+  // The WebM blob goes through NativeBridge, which transcodes it to H.264 + AAC
+  // MP4 on-device. It is never saved raw as ".mp4" (that caused silent videos).
   const isDirectDeviceSave = typeof window !== 'undefined' && (
     isNativeAndroid() ||
     window.location.hostname.includes('github.io') ||
@@ -92,8 +94,8 @@ const convertWebmToMp4OnServer = async (
   );
 
   if (isDirectDeviceSave) {
-    console.log(`Direct device/native save detected, saving video (${durationInMs}ms) directly to gallery.`);
-    fallbackSave(webmBlob);
+    console.log(`Direct device/native save detected, transcoding video (${durationInMs}ms) to MP4 for gallery.`);
+    await saveVideoToDevice(webmBlob, filename, 'video/webm', durationInMs);
     return;
   }
 
@@ -235,6 +237,31 @@ export default function App() {
     options.ambientEdgeMode
   ]);
 
+  // If the user turned the lights off from the notification (which stops
+  // the native service while the app is in the background), re-sync the
+  // in-app toggle when the app comes back to the foreground.
+  useEffect(() => {
+    if (!isNativeAndroid()) return;
+    const syncFromNative = () => {
+      isEdgeOverlayActive().then(active => {
+        if (!active) {
+          setOptions(prev => prev.ambientEdgeEnabled
+            ? { ...prev, ambientEdgeEnabled: false, ambientEdgePreset: 'none' }
+            : prev);
+        }
+      }).catch(() => {});
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') syncFromNative();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', syncFromNative);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', syncFromNative);
+    };
+  }, []);
+
   // Preload all backdrop & center disc images immediately on mount for zero-latency switching
   useEffect(() => {
     preloadAllPresets();
@@ -297,12 +324,8 @@ export default function App() {
     }
   }, [adModalConfig.isOpen]);
 
-  const isMp4Supported = typeof MediaRecorder !== 'undefined' && 
-    (typeof (MediaRecorder as any).isTypeSupported === 'function') &&
-    ((MediaRecorder as any).isTypeSupported('video/mp4;codecs=h264,aac') || 
-     (MediaRecorder as any).isTypeSupported('video/mp4;codecs=h264') || 
-     (MediaRecorder as any).isTypeSupported('video/mp4'));
-
+  // Note: MP4 is deliberately NOT probed here. Recording is always WebM
+  // (see getOptimalRecorderOptions); MP4 is only the transcoded output.
   // Track state progress for file sources
   const [trackProgress, setTrackProgress] = useState<number>(0);
   const [trackDuration, setTrackDuration] = useState<number>(0);
@@ -398,20 +421,19 @@ export default function App() {
       '4k': 24000000   // 24 Mbps (increased for sharp detail at 4K resolution)
     };
 
-    // We prioritize standard MP4 with H.264/AAC for maximum compatibility with mobile galleries (iOS & Android).
-    // If the browser does not support native MP4 recording, we fall back to hardware-accelerated WebM formats.
+    // Canonical recording format is ALWAYS WebM. Android WebView / Chrome
+    // reports MP4 as "supported" but records it unreliably (missing AAC
+    // audio, broken duration), which is why exports sometimes came out as
+    // .mp4 and sometimes as .webm. WebM (VP9/VP8 + Opus) is recorded
+    // consistently, then converted to H.264 + AAC MP4 by the native
+    // transcoder (on Android) or the server (on web) before saving.
     const preferredMimeTypes = [
-      'video/mp4;codecs=h264,aac',
-      'video/mp4;codecs=h264,mp3',
-      'video/mp4;codecs=h264',
-      'video/mp4;codecs=avc1',
-      'video/mp4',
-      'video/webm;codecs=h264,opus',
-      'video/webm;codecs=h264',
       'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp9',
       'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=h264,opus',
+      'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
+      'video/webm;codecs=h264',
       'video/webm'
     ];
 
@@ -492,30 +514,27 @@ export default function App() {
       };
 
       recorder.onstop = () => {
+        // Exact recording duration, in ms, passed through to the MP4 file
+        // and to MediaStore so Gallery / WhatsApp show the real length.
         const durationInMs = Math.max(1000, Date.now() - recordingStartTimeRef.current);
-        const cleanMime = recOptions.mimeType?.includes('mp4') ? 'video/mp4' : 'video/webm';
-        const extension = cleanMime === 'video/mp4' ? 'mp4' : 'webm';
-        const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
+        // Recording is always WebM now (see getOptimalRecorderOptions).
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`;
-          await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
+          await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
         };
 
-        if (cleanMime.includes('webm')) {
-          fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
-            convertWebmToMp4OnServer(
-              fixedBlob,
-              `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`,
-              setIsTranscoding,
-              setTranscodeMessage,
-              saveBlob,
-              durationInMs
-            );
-          });
-        } else {
-          saveBlob(blob);
-        }
+        fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
+          convertWebmToMp4OnServer(
+            fixedBlob,
+            `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`,
+            setIsTranscoding,
+            setTranscodeMessage,
+            saveBlob,
+            durationInMs
+          );
+        });
       };
 
       mediaRecorderRef.current = recorder;
@@ -532,7 +551,7 @@ export default function App() {
           }
         };
         recorder.onstop = () => {
-          const durationInMs = Date.now() - recordingStartTimeRef.current;
+          const durationInMs = Math.max(1000, Date.now() - recordingStartTimeRef.current);
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
           const saveBlob = async (finalBlob: Blob) => {
@@ -683,30 +702,27 @@ export default function App() {
           return;
         }
 
+        // Exact export duration: wall-clock time, but never less than the
+        // audio length the export was asked for, so Gallery shows it correctly.
         const durationInMs = Math.max(Date.now() - exportStartTime, Math.round(totalDuration * 1000));
-        const cleanMime = recOptions.mimeType?.includes('mp4') ? 'video/mp4' : 'video/webm';
-        const extension = cleanMime === 'video/mp4' ? 'mp4' : 'webm';
-        const blob = new Blob(recordedChunksRef.current, { type: cleanMime });
+        // Recording is always WebM now (see getOptimalRecorderOptions).
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
-          await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
+          await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
         };
 
-        if (cleanMime.includes('webm')) {
-          fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
-            convertWebmToMp4OnServer(
-              fixedBlob,
-              `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
-              setIsTranscoding,
-              setTranscodeMessage,
-              saveBlob,
-              durationInMs
-            );
-          });
-        } else {
-          saveBlob(blob);
-        }
+        fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
+          convertWebmToMp4OnServer(
+            fixedBlob,
+            `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
+            setIsTranscoding,
+            setTranscodeMessage,
+            saveBlob,
+            durationInMs
+          );
+        });
       };
 
       mediaRecorderRef.current = recorder;
@@ -812,7 +828,7 @@ export default function App() {
 
           const saveBlob = async (finalBlob: Blob) => {
             const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
-            await saveVideoToDevice(finalBlob, fileName, 'video/mp4', durationInMs);
+            await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {

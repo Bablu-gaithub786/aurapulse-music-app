@@ -18,18 +18,37 @@ import java.nio.ByteBuffer;
  * Converts WebM (VP8/VP9/H264 + Opus) recorded by MediaRecorder into a 100% compliant,
  * ISO-BMFF standard MP4 container with H.264 video and AAC-LC audio.
  *
- * This guarantees:
+ * Guarantees:
  * 1. Exact song duration display in Vivo Gallery and Google Files (no 1s or 2s truncations).
  * 2. Full audio playback on WhatsApp, Instagram, and mobile players (no lost audio due to Opus).
+ *
+ * Reliability rules (Fix 1):
+ * - MediaMuxer is started ONLY after every required track format has been discovered.
+ *   There is no "50 attempts then skip audio" path: if a required video/audio encoder
+ *   never emits INFO_OUTPUT_FORMAT_CHANGED within the discovery deadline, convert()
+ *   returns false and the caller must NOT save the raw WebM bytes as .mp4.
+ * - Format discovery feeds the decoders continuously (including end-of-stream) instead
+ *   of pumping a fixed number of frames and giving up.
+ * - If the input has an audio track, the output MUST have an AAC track. A video-only
+ *   MP4 is only valid when the input really has no audio track.
  */
 public class UniversalVideoTranscoder {
 
     private static final String TAG = "AuraPulseTranscoder";
     private static final int TIMEOUT_US = 10000; // 10ms timeout
+    // Format discovery gets a real wall-clock budget, not a fixed frame count.
+    private static final long FORMAT_DISCOVERY_TIMEOUT_MS = 10000;
+    private static final long TRANSCODE_TIMEOUT_MS = 120000;
 
     public interface TranscodeCallback {
         void onSuccess(File mp4File);
         void onFailure(Exception e);
+    }
+
+    /** Small per-stream pump state so end-of-stream is queued exactly once. */
+    private static class PumpState {
+        boolean extractorDone = false;
+        boolean decoderDone = false;
     }
 
     public static File transcodeWebmToMp4(Context context, byte[] inputBytes, String baseName, long targetDurationMs) throws Exception {
@@ -39,26 +58,39 @@ public class UniversalVideoTranscoder {
 
         File cacheDir = context.getCacheDir();
         File tempInput = new File(cacheDir, "rec_raw_" + System.currentTimeMillis() + ".input");
-        File tempOutput = new File(cacheDir, "rec_final_" + System.currentTimeMillis() + ".mp4");
-
         try (FileOutputStream fos = new FileOutputStream(tempInput)) {
             fos.write(inputBytes);
             fos.flush();
         }
-
         try {
-            boolean success = convert(tempInput, tempOutput, targetDurationMs);
-            if (success && tempOutput.exists() && tempOutput.length() > 0) {
-                Log.i(TAG, "Transcoding succeeded. Output MP4 size: " + tempOutput.length() + " bytes");
-                return tempOutput;
-            } else {
-                throw new Exception("Transcoder finished but output file is invalid");
-            }
+            return transcodeWebmToMp4(context, tempInput, baseName, targetDurationMs);
         } finally {
             if (tempInput.exists()) {
                 tempInput.delete();
             }
         }
+    }
+
+    /**
+     * File-based overload: the caller can transcode a temp file on disk without
+     * holding the whole video in RAM a second time. The returned MP4 file lives
+     * in the app cache dir; the caller owns deleting it after copying it out.
+     */
+    public static File transcodeWebmToMp4(Context context, File inputFile, String baseName, long targetDurationMs) throws Exception {
+        if (inputFile == null || !inputFile.exists() || inputFile.length() == 0) {
+            throw new IllegalArgumentException("Input file is empty or missing");
+        }
+        File cacheDir = context.getCacheDir();
+        File tempOutput = new File(cacheDir, "rec_final_" + System.currentTimeMillis() + ".mp4");
+        boolean success = convert(inputFile, tempOutput, targetDurationMs);
+        if (success && tempOutput.exists() && tempOutput.length() > 0) {
+            Log.i(TAG, "Transcoding succeeded. Output MP4 size: " + tempOutput.length() + " bytes");
+            return tempOutput;
+        }
+        if (tempOutput.exists()) {
+            tempOutput.delete();
+        }
+        throw new Exception("Transcoder finished but output file is invalid (audio or video track missing)");
     }
 
     private static boolean convert(File inputFile, File outputFile, long targetDurationMs) {
@@ -71,6 +103,7 @@ public class UniversalVideoTranscoder {
         MediaCodec videoDecoder = null;
         MediaCodec videoEncoder = null;
         Surface videoInputSurface = null;
+        boolean muxerStarted = false;
 
         try {
             videoExtractor.setDataSource(inputFile.getAbsolutePath());
@@ -171,49 +204,72 @@ public class UniversalVideoTranscoder {
                 Log.i(TAG, "Audio configured: source " + audioMime + " -> target AAC (" + sampleRate + "Hz, " + channelCount + " ch)");
             }
 
-            // If video requires surface encoding, wait for encoder to output format
-            if (!isVideoDirectCopy && videoEncoder != null) {
-                boolean videoFormatFound = false;
-                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-                int attempts = 0;
-                while (!videoFormatFound && attempts < 50) {
-                    attempts++;
-                    // Feed 1 frame to kickstart encoder
-                    pumpVideoDecoder(videoExtractor, videoDecoder);
+            // 3. Format discovery: wait until EVERY required encoder format is known.
+            // No fixed attempt count, no silent skip. If a required format never
+            // appears, fail loudly so the caller never saves a soundless file.
+            boolean needVideoFormat = videoTrackIndex >= 0 && !isVideoDirectCopy;
+            boolean needAudioFormat = hasAudio;
+            boolean videoFormatFound = !needVideoFormat;
+            boolean audioFormatFound = !needAudioFormat;
+            PumpState videoPump = new PumpState();
+            PumpState audioPump = new PumpState();
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            long discoveryDeadline = System.currentTimeMillis() + FORMAT_DISCOVERY_TIMEOUT_MS;
+
+            while ((!videoFormatFound || !audioFormatFound)
+                    && System.currentTimeMillis() < discoveryDeadline) {
+                if (!videoFormatFound && videoEncoder != null && videoDecoder != null) {
+                    pumpVideoDecoder(videoExtractor, videoDecoder, videoPump);
                     int outIdx = videoEncoder.dequeueOutputBuffer(info, TIMEOUT_US);
                     if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        MediaFormat newFormat = videoEncoder.getOutputFormat();
-                        muxerVideoTrack = muxer.addTrack(newFormat);
+                        muxerVideoTrack = muxer.addTrack(videoEncoder.getOutputFormat());
                         videoFormatFound = true;
                         Log.i(TAG, "H.264 Video encoder output format discovered and added to muxer");
                     } else if (outIdx >= 0) {
                         videoEncoder.releaseOutputBuffer(outIdx, false);
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_END_OF_STREAM) {
+                        break;
                     }
                 }
-            }
-
-            // Kickstart audio encoder to get AAC output format with CSD-0
-            if (hasAudio && audioEncoder != null) {
-                boolean audioFormatFound = false;
-                MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-                int attempts = 0;
-                while (!audioFormatFound && attempts < 50) {
-                    attempts++;
-                    pumpAudio(audioExtractor, audioDecoder, audioEncoder);
+                if (!audioFormatFound && audioEncoder != null && audioDecoder != null) {
+                    pumpAudio(audioExtractor, audioDecoder, audioEncoder, audioPump);
                     int outIdx = audioEncoder.dequeueOutputBuffer(info, TIMEOUT_US);
                     if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        MediaFormat newFormat = audioEncoder.getOutputFormat();
-                        muxerAudioTrack = muxer.addTrack(newFormat);
+                        muxerAudioTrack = muxer.addTrack(audioEncoder.getOutputFormat());
                         audioFormatFound = true;
                         Log.i(TAG, "AAC Audio encoder output format discovered and added to muxer");
                     } else if (outIdx >= 0) {
                         audioEncoder.releaseOutputBuffer(outIdx, false);
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_END_OF_STREAM) {
+                        break;
                     }
+                }
+                // If both inputs are exhausted and no format appeared, do not spin forever.
+                if (videoPump.extractorDone && audioPump.extractorDone
+                        && (!needVideoFormat || videoPump.decoderDone)
+                        && (!needAudioFormat || audioPump.decoderDone)) {
+                    break;
                 }
             }
 
-            // Start Muxer
+            if (!videoFormatFound || !audioFormatFound) {
+                Log.e(TAG, "Format discovery failed: videoFound=" + videoFormatFound
+                        + " audioFound=" + audioFormatFound
+                        + " hasAudio=" + hasAudio + " needVideo=" + needVideoFormat);
+                return false;
+            }
+            if (hasAudio && muxerAudioTrack < 0) {
+                Log.e(TAG, "Audio track present in input but no AAC track was added to muxer");
+                return false;
+            }
+            if (videoTrackIndex >= 0 && muxerVideoTrack < 0) {
+                Log.e(TAG, "Video track present in input but no video track was added to muxer");
+                return false;
+            }
+
+            // Start Muxer only now that all required tracks are ready.
             muxer.start();
+            muxerStarted = true;
             Log.i(TAG, "MediaMuxer started. Writing universal MP4 tracks...");
 
             // Process Video Track
@@ -234,17 +290,30 @@ public class UniversalVideoTranscoder {
                 }
                 Log.i(TAG, "Direct video copy completed.");
             } else if (videoDecoder != null && videoEncoder != null && muxerVideoTrack >= 0) {
-                transcodeVideoFrames(videoExtractor, videoDecoder, videoEncoder, muxer, muxerVideoTrack);
+                if (!transcodeVideoFrames(videoExtractor, videoDecoder, videoEncoder, muxer, muxerVideoTrack, videoPump)) {
+                    return false;
+                }
                 Log.i(TAG, "Transcoded video frames completed.");
             }
 
-            // Process Audio Track
+            // Process Audio Track - only when a real AAC track exists.
             if (hasAudio && audioDecoder != null && audioEncoder != null && muxerAudioTrack >= 0) {
-                transcodeAudioStream(audioExtractor, audioDecoder, audioEncoder, muxer, muxerAudioTrack);
+                if (!transcodeAudioStream(audioExtractor, audioDecoder, audioEncoder, muxer, muxerAudioTrack, audioPump)) {
+                    return false;
+                }
                 Log.i(TAG, "Transcoded audio to AAC completed.");
+            } else if (hasAudio) {
+                Log.e(TAG, "Audio was lost during transcode: muxerAudioTrack=" + muxerAudioTrack);
+                return false;
             }
 
-            muxer.stop();
+            try {
+                muxer.stop();
+                muxerStarted = false;
+            } catch (Exception e) {
+                Log.e(TAG, "MediaMuxer stop failed: " + e.getMessage(), e);
+                return false;
+            }
             Log.i(TAG, "Universal MP4 creation 100% completed!");
             return true;
 
@@ -259,11 +328,21 @@ public class UniversalVideoTranscoder {
             try { if (videoInputSurface != null) videoInputSurface.release(); } catch (Exception ignored) {}
             try { if (audioDecoder != null) { audioDecoder.stop(); audioDecoder.release(); } } catch (Exception ignored) {}
             try { if (audioEncoder != null) { audioEncoder.stop(); audioEncoder.release(); } } catch (Exception ignored) {}
-            try { if (muxer != null) muxer.release(); } catch (Exception ignored) {}
+            try {
+                if (muxer != null) {
+                    if (muxerStarted) {
+                        try { muxer.stop(); } catch (Exception ignored) {}
+                    }
+                    muxer.release();
+                }
+            } catch (Exception ignored) {}
         }
     }
 
-    private static void pumpVideoDecoder(MediaExtractor extractor, MediaCodec decoder) {
+    private static void pumpVideoDecoder(MediaExtractor extractor, MediaCodec decoder, PumpState state) {
+        if (state.extractorDone) {
+            return;
+        }
         int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
         if (inIdx >= 0) {
             ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
@@ -272,21 +351,29 @@ public class UniversalVideoTranscoder {
                 if (sampleSize > 0) {
                     decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0);
                     extractor.advance();
+                } else {
+                    decoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                    state.extractorDone = true;
                 }
             }
         }
     }
 
-    private static void pumpAudio(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder) {
+    private static void pumpAudio(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder, PumpState state) {
         // Feed extractor to decoder
-        int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
-        if (inIdx >= 0) {
-            ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
-            if (inBuf != null) {
-                int sampleSize = extractor.readSampleData(inBuf, 0);
-                if (sampleSize > 0) {
-                    decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0);
-                    extractor.advance();
+        if (!state.extractorDone) {
+            int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
+            if (inIdx >= 0) {
+                ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
+                if (inBuf != null) {
+                    int sampleSize = extractor.readSampleData(inBuf, 0);
+                    if (sampleSize > 0) {
+                        decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0);
+                        extractor.advance();
+                    } else {
+                        decoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
+                        state.extractorDone = true;
+                    }
                 }
             }
         }
@@ -296,6 +383,10 @@ public class UniversalVideoTranscoder {
         int decOutIdx = decoder.dequeueOutputBuffer(decInfo, TIMEOUT_US);
         if (decOutIdx >= 0) {
             ByteBuffer decBuf = decoder.getOutputBuffer(decOutIdx);
+            boolean eos = (decInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
+            if (eos) {
+                state.decoderDone = true;
+            }
             if (decBuf != null && decInfo.size > 0) {
                 int encInIdx = encoder.dequeueInputBuffer(TIMEOUT_US);
                 if (encInIdx >= 0) {
@@ -303,21 +394,31 @@ public class UniversalVideoTranscoder {
                     if (encInBuf != null) {
                         encInBuf.clear();
                         encInBuf.put(decBuf);
-                        encoder.queueInputBuffer(encInIdx, 0, decInfo.size, decInfo.presentationTimeUs, 0);
+                        encoder.queueInputBuffer(encInIdx, 0, decInfo.size, decInfo.presentationTimeUs, eos ? MediaCodec.BUFFER_FLAG_END_OF_STREAM : 0);
                     }
+                }
+            } else if (eos) {
+                int encInIdx = encoder.dequeueInputBuffer(TIMEOUT_US);
+                if (encInIdx >= 0) {
+                    encoder.queueInputBuffer(encInIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
                 }
             }
             decoder.releaseOutputBuffer(decOutIdx, false);
         }
     }
 
-    private static void transcodeVideoFrames(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder, MediaMuxer muxer, int track) {
-        boolean extractorDone = false;
+    private static boolean transcodeVideoFrames(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder, MediaMuxer muxer, int track, PumpState state) {
+        boolean extractorDone = state.extractorDone;
         boolean decoderDone = false;
         boolean encoderDone = false;
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        long deadline = System.currentTimeMillis() + TRANSCODE_TIMEOUT_MS;
 
         while (!encoderDone) {
+            if (System.currentTimeMillis() > deadline) {
+                Log.e(TAG, "Video transcode timed out");
+                return false;
+            }
             if (!extractorDone) {
                 int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
                 if (inIdx >= 0) {
@@ -357,15 +458,21 @@ public class UniversalVideoTranscoder {
                 }
             }
         }
+        return true;
     }
 
-    private static void transcodeAudioStream(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder, MediaMuxer muxer, int track) {
-        boolean extractorDone = false;
-        boolean decoderDone = false;
+    private static boolean transcodeAudioStream(MediaExtractor extractor, MediaCodec decoder, MediaCodec encoder, MediaMuxer muxer, int track, PumpState state) {
+        boolean extractorDone = state.extractorDone;
+        boolean decoderDone = state.decoderDone;
         boolean encoderDone = false;
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        long deadline = System.currentTimeMillis() + TRANSCODE_TIMEOUT_MS;
 
         while (!encoderDone) {
+            if (System.currentTimeMillis() > deadline) {
+                Log.e(TAG, "Audio transcode timed out");
+                return false;
+            }
             if (!extractorDone) {
                 int inIdx = decoder.dequeueInputBuffer(TIMEOUT_US);
                 if (inIdx >= 0) {
@@ -424,5 +531,6 @@ public class UniversalVideoTranscoder {
                 }
             }
         }
+        return true;
     }
 }

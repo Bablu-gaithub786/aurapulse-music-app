@@ -3,7 +3,10 @@ import { Capacitor } from '@capacitor/core';
 interface NativeBridgePluginInterface {
   checkOverlayPermission: () => Promise<{ granted: boolean }>;
   requestOverlayPermission: () => Promise<{ requested?: boolean; alreadyGranted?: boolean }>;
-  startSystemEdgeOverlay: (options: { preset: string; color: string; thickness: number; speed: number; mode: string }) => Promise<{ started: boolean }>;
+  checkNotificationPermission: () => Promise<{ granted: boolean }>;
+  requestNotificationPermission: () => Promise<{ granted: boolean }>;
+  isEdgeOverlayActive: () => Promise<{ active: boolean }>;
+  startSystemEdgeOverlay: (options: { preset: string; color: string; thickness: number; speed: number; mode: string; aodEnabled?: boolean }) => Promise<{ started: boolean }>;
   stopSystemEdgeOverlay: () => Promise<{ stopped: boolean }>;
   saveVideoToGallery: (options: { base64Data: string; fileName: string; mimeType: string; durationMs?: number }) => Promise<{ success: boolean; fileName: string; uri: string }>;
   saveImageToGallery: (options: { base64Data: string; fileName: string }) => Promise<{ success: boolean; fileName: string; uri: string }>;
@@ -44,22 +47,76 @@ export const requestOverlayPermission = async (): Promise<boolean> => {
   }
 };
 
+// POST_NOTIFICATIONS (Android 13+): the foreground service notification
+// with the Cancel button is invisible without this runtime permission,
+// especially on Vivo. Request it before starting the service; a denial
+// must not block starting the lights, it only hides the notification.
+export const checkNotificationPermission = async (): Promise<boolean> => {
+  const bridge = getNativeBridge();
+  if (!bridge || typeof bridge.checkNotificationPermission !== 'function') return true;
+  try {
+    const res = await bridge.checkNotificationPermission();
+    return !!res?.granted;
+  } catch (err) {
+    console.warn('Failed to check notification permission:', err);
+    return false;
+  }
+};
+
+export const requestNotificationPermission = async (): Promise<boolean> => {
+  const bridge = getNativeBridge();
+  if (!bridge || typeof bridge.requestNotificationPermission !== 'function') return true;
+  try {
+    const res = await bridge.requestNotificationPermission();
+    return !!res?.granted;
+  } catch (err) {
+    console.warn('Failed to request notification permission:', err);
+    return false;
+  }
+};
+
+export const ensureNotificationPermission = async (): Promise<boolean> => {
+  if (!isNativeAndroid()) return true;
+  const granted = await checkNotificationPermission();
+  if (granted) return true;
+  return requestNotificationPermission();
+};
+
+// True while the native service is running. The service writes this flag
+// to SharedPreferences on start/stop (including a notification Cancel),
+// so the web toggle can re-sync when the app comes back to the foreground.
+export const isEdgeOverlayActive = async (): Promise<boolean> => {
+  const bridge = getNativeBridge();
+  if (!bridge || typeof bridge.isEdgeOverlayActive !== 'function') return false;
+  try {
+    const res = await bridge.isEdgeOverlayActive();
+    return !!res?.active;
+  } catch (err) {
+    console.warn('Failed to check edge overlay state:', err);
+    return false;
+  }
+};
+
 export const startSystemEdgeOverlay = async (options: {
   preset?: string;
   color?: string;
   thickness?: number;
   speed?: number;
   mode?: string;
+  aodEnabled?: boolean;
 }): Promise<boolean> => {
   const bridge = getNativeBridge();
   if (!bridge) return false;
+  // Ask for notification permission first so the Cancel button is visible.
+  await ensureNotificationPermission();
   try {
     const res = await bridge.startSystemEdgeOverlay({
       preset: options.preset || 'dynamic-rainbow',
       color: options.color || '#00f0ff',
       thickness: options.thickness || 6,
       speed: options.speed || 3,
-      mode: options.mode || 'all-edges'
+      mode: options.mode || 'all-edges',
+      aodEnabled: options.aodEnabled !== false
     });
     return !!res?.started;
   } catch (err) {

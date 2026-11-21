@@ -39,9 +39,15 @@ public class EdgeLightingService extends Service {
     public static final String EXTRA_THICKNESS = "extra_thickness";
     public static final String EXTRA_SPEED = "extra_speed";
     public static final String EXTRA_MODE = "extra_mode";
+    public static final String EXTRA_AOD_ENABLED = "extra_aod_enabled";
 
-    private static final String CHANNEL_ID = "aurapulse_edge_lights_v2";
+    // v3 channel: a new channel id is required because Android never applies a
+    // changed importance/sound to a channel the user already has. The old
+    // IMPORTANCE_LOW v2 channel stays unused for existing installs.
+    private static final String CHANNEL_ID = "aurapulse_edge_lights_v3";
     private static final int NOTIFICATION_ID = 78601;
+    private static final String PREFS_NAME = "aurapulse_edge_lights";
+    private static final String KEY_AOD_ENABLED = "edge_aod_enabled";
 
     private WindowManager windowManager;
     private EdgeLightView overlayView;
@@ -56,22 +62,34 @@ public class EdgeLightingService extends Service {
     private int currentThickness = 6;
     private int currentSpeed = 3;
     private String currentMode = "all-edges";
+    // AOD mode: when true, lights keep running after screen-off in the
+    // pure-black AOD activity until the user unlocks, taps, or presses
+    // Cancel in the notification. Default true (see onStartCommand).
+    private boolean aodEnabled = true;
+    private boolean aodActive = false;
 
-    // BroadcastReceiver to pause edge glow when screen is off to save battery, and resume when screen turns on
+    // BroadcastReceiver: screen-off switches to AOD mode (if enabled) instead
+    // of just killing the lights, and screen-on / unlock restores the overlay.
     private final BroadcastReceiver screenStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent == null) return;
             String action = intent.getAction();
             if (Intent.ACTION_SCREEN_OFF.equals(action)) {
-                // When hardware power button is pressed or screen times out, RESPECT the screen off!
-                // Pause animation and hide view to save 100% battery and NEVER wake screen back up!
+                // Hide the normal overlay first in every case.
                 if (overlayView != null) {
                     overlayView.stopAnimation();
                     overlayView.setVisibility(View.GONE);
                 }
+                // AOD mode: show the black AOD activity exactly once.
+                // No wake lock, no FLAG_TURN_SCREEN_ON, no re-launch loop -
+                // the activity only appears on this screen-off event.
+                if (aodEnabled) {
+                    enableScreenOffAodMode();
+                }
             } else if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
-                // When screen is turned on by user, resume RGB edge lighting glow
+                // Unlock / screen-on always ends AOD and resumes the overlay.
+                disableScreenOffAodMode();
                 if (overlayView != null) {
                     overlayView.setVisibility(View.VISIBLE);
                     overlayView.startAnimation();
@@ -89,6 +107,10 @@ public class EdgeLightingService extends Service {
     public void onCreate() {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        try {
+            aodEnabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_AOD_ENABLED, true);
+        } catch (Exception ignored) {}
         createNotificationChannel();
 
         IntentFilter filter = new IntentFilter();
@@ -106,7 +128,10 @@ public class EdgeLightingService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            // Notification "Cancel / Turn Off" pressed: stop everything now.
+            disableScreenOffAodMode();
             removeOverlay();
+            NativeBridgePlugin.setEdgeOverlayActive(this, false);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE);
             } else {
@@ -127,12 +152,22 @@ public class EdgeLightingService extends Service {
         int thickness = intent != null ? intent.getIntExtra(EXTRA_THICKNESS, 6) : 6;
         int speed = intent != null ? intent.getIntExtra(EXTRA_SPEED, 3) : 3;
         String mode = intent != null ? intent.getStringExtra(EXTRA_MODE) : "all-edges";
+        if (intent != null && intent.hasExtra(EXTRA_AOD_ENABLED)) {
+            aodEnabled = intent.getBooleanExtra(EXTRA_AOD_ENABLED, true);
+            try {
+                getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit().putBoolean(KEY_AOD_ENABLED, aodEnabled).apply();
+            } catch (Exception ignored) {}
+        }
 
         currentPreset = preset;
         currentColor = color;
         currentThickness = thickness;
         currentSpeed = speed;
         currentMode = mode;
+        NativeBridgePlugin.setEdgeOverlayActive(this, true);
+        // A fresh start never resumes a stale AOD screen.
+        disableScreenOffAodMode();
 
         Notification notification = buildForegroundNotification();
         try {
@@ -206,9 +241,14 @@ public class EdgeLightingService extends Service {
     }
 
     private void enableScreenOffAodMode() {
+        // Exactly once per screen-off: never re-launch while AOD is already
+        // showing, and never acquire a wake lock / turn the screen on.
+        // AodEdgeLightingActivity uses setShowWhenLocked(true) only, on a
+        // pure-black AMOLED canvas, so there is no infinite wake loop.
+        if (aodActive || AodEdgeLightingActivity.isActive()) {
+            return;
+        }
         try {
-            // Launch AodEdgeLightingActivity which has setShowWhenLocked(true) & setTurnScreenOn(true)
-            // to illuminate the screen borders in pure black when the power button is pressed!
             Intent aodIntent = new Intent(this, AodEdgeLightingActivity.class);
             aodIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             aodIntent.putExtra(EXTRA_PRESET, currentPreset);
@@ -217,12 +257,17 @@ public class EdgeLightingService extends Service {
             aodIntent.putExtra(EXTRA_SPEED, currentSpeed);
             aodIntent.putExtra(EXTRA_MODE, currentMode);
             startActivity(aodIntent);
+            aodActive = true;
         } catch (Exception e) {
+            // Background activity starts can be blocked on some OEM ROMs.
+            // Log and stay off - never retry in a loop.
             e.printStackTrace();
+            aodActive = false;
         }
     }
 
     private void disableScreenOffAodMode() {
+        aodActive = false;
         try {
             AodEdgeLightingActivity.dismissIfActive();
         } catch (Exception e) {
@@ -248,6 +293,8 @@ public class EdgeLightingService extends Service {
     @Override
     public void onDestroy() {
         super.onDestroy();
+        disableScreenOffAodMode();
+        NativeBridgePlugin.setEdgeOverlayActive(this, false);
         if (isReceiverRegistered) {
             try {
                 unregisterReceiver(screenStateReceiver);
@@ -262,13 +309,18 @@ public class EdgeLightingService extends Service {
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // IMPORTANCE_DEFAULT so the persistent notification and its
+            // Cancel action stay visible in the shade (IMPORTANCE_LOW
+            // collapses them). No sound or vibration, by design.
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
                     "Dynamic RGB Edge Lighting",
-                    NotificationManager.IMPORTANCE_LOW
+                    NotificationManager.IMPORTANCE_DEFAULT
             );
             channel.setDescription("Shows active AuraPulse edge lighting and cancel controls");
-            channel.setShowBadge(true);
+            channel.setSound(null, null);
+            channel.enableVibration(false);
+            channel.setShowBadge(false);
             channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
             if (manager != null) {
@@ -304,10 +356,11 @@ public class EdgeLightingService extends Service {
         }
 
         builder.setContentTitle("✨ AuraPulse Dynamic Lights ON")
-                .setContentText("RGB edge lighting active continuously. Tap button to turn off.")
+                .setContentText("RGB edge lighting active continuously. Tap Cancel below to turn off.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(contentPending)
-                .setOngoing(true);
+                .setOngoing(true)
+                .setOnlyAlertOnce(true);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             builder.setVisibility(Notification.VISIBILITY_PUBLIC);
@@ -317,7 +370,7 @@ public class EdgeLightingService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
             builder.addAction(
                     android.R.drawable.ic_menu_close_clear_cancel,
-                    "❌ Cancel / Turn Off Lights",
+                    "Cancel / Turn Off Dynamic Lights",
                     stopPending
             );
         }

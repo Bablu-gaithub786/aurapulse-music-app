@@ -28,16 +28,22 @@ public class AodEdgeLightingActivity extends Activity {
     private EdgeLightingService.EdgeLightView aodView;
     private PowerManager.WakeLock wakeLock;
 
+    // Dismiss ONLY on an explicit dismiss, or on unlock (user present).
+    // NEVER on ACTION_SCREEN_OFF: this activity is the screen-off AOD
+    // itself, so finishing on screen-off would kill the lights at once.
     private final BroadcastReceiver dismissReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (intent != null && (ACTION_DISMISS_AOD.equals(intent.getAction())
-                    || Intent.ACTION_SCREEN_OFF.equals(intent.getAction())
                     || Intent.ACTION_USER_PRESENT.equals(intent.getAction()))) {
                 dismissAod();
             }
         }
     };
+
+    public static boolean isActive() {
+        return currentInstance != null;
+    }
 
     public static void dismissIfActive() {
         if (currentInstance != null) {
@@ -92,10 +98,12 @@ public class AodEdgeLightingActivity extends Activity {
         aodView.updateParams(preset, color, thickness, speed, mode);
         setContentView(aodView);
 
-        // Register receiver for dismiss events (e.g. screen off or user unlock)
+        // Register receiver for dismiss events (explicit dismiss or user unlock only).
+        // No wake lock is ever acquired here and FLAG_TURN_SCREEN_ON is never
+        // set: this activity must not wake the screen in a loop. It is shown
+        // once by EdgeLightingService on screen-off, on a pure-black canvas.
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_DISMISS_AOD);
-        filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_USER_PRESENT);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(dismissReceiver, filter, Context.RECEIVER_NOT_EXPORTED);

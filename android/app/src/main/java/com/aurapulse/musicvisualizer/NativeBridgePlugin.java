@@ -1,8 +1,11 @@
 package com.aurapulse.musicvisualizer;
 
+import android.Manifest;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -15,18 +18,49 @@ import android.util.Base64;
 import android.util.Log;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
+
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 
-@CapacitorPlugin(name = "NativeBridge")
+@CapacitorPlugin(
+        name = "NativeBridge",
+        permissions = {
+                @Permission(alias = "notifications", strings = { Manifest.permission.POST_NOTIFICATIONS })
+        }
+)
 public class NativeBridgePlugin extends Plugin {
+
+    private static final String PREFS_NAME = "aurapulse_edge_lights";
+    private static final String KEY_ACTIVE = "edge_overlay_active";
+
+    static void setEdgeOverlayActive(Context context, boolean active) {
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_ACTIVE, active).apply();
+        } catch (Exception ignored) {}
+    }
+
+    static boolean isEdgeOverlayActive(Context context) {
+        try {
+            return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getBoolean(KEY_ACTIVE, false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     @PluginMethod
     public void checkOverlayPermission(PluginCall call) {
@@ -70,6 +104,60 @@ public class NativeBridgePlugin extends Plugin {
         }
     }
 
+    // ---- POST_NOTIFICATIONS (Android 13+) ----
+
+    @PluginMethod
+    public void checkNotificationPermission(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                ret.put("granted", true);
+            } else {
+                boolean granted = ContextCompat.checkSelfPermission(
+                        getContext(), Manifest.permission.POST_NOTIFICATIONS)
+                        == PackageManager.PERMISSION_GRANTED;
+                ret.put("granted", granted);
+            }
+            call.resolve(ret);
+        } catch (Exception e) {
+            ret.put("granted", false);
+            ret.put("error", e.getMessage());
+            call.resolve(ret);
+        }
+    }
+
+    @PluginMethod
+    public void requestNotificationPermission(PluginCall call) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            JSObject ret = new JSObject();
+            ret.put("granted", true);
+            call.resolve(ret);
+            return;
+        }
+        // Capacitor permission flow: shows the system runtime dialog and
+        // resolves the call in notificationPermissionCallback below.
+        requestPermissionForAlias("notifications", call, "notificationPermissionCallback");
+    }
+
+    @PermissionCallback
+    private void notificationPermissionCallback(PluginCall call) {
+        JSObject ret = new JSObject();
+        try {
+            PermissionState state = getPermissionState("notifications");
+            ret.put("granted", state == PermissionState.GRANTED);
+        } catch (Exception e) {
+            ret.put("granted", false);
+        }
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void isEdgeOverlayActive(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("active", isEdgeOverlayActive(getContext()));
+        call.resolve(ret);
+    }
+
     @PluginMethod
     public void startSystemEdgeOverlay(PluginCall call) {
         Context context = getContext();
@@ -83,6 +171,15 @@ public class NativeBridgePlugin extends Plugin {
         int thickness = call.getInt("thickness", 6);
         int speed = call.getInt("speed", 3);
         String mode = call.getString("mode", "all-edges");
+        // AOD mode: keep lights on after screen-off until the user turns them
+        // off from the notification. Defaults to true; JS may pass false.
+        boolean aodEnabled = true;
+        try {
+            Boolean aod = call.getBoolean("aodEnabled");
+            if (aod != null) {
+                aodEnabled = aod;
+            }
+        } catch (Exception ignored) {}
 
         Intent serviceIntent = new Intent(context, EdgeLightingService.class);
         serviceIntent.setAction(EdgeLightingService.ACTION_START);
@@ -91,6 +188,7 @@ public class NativeBridgePlugin extends Plugin {
         serviceIntent.putExtra(EdgeLightingService.EXTRA_THICKNESS, thickness);
         serviceIntent.putExtra(EdgeLightingService.EXTRA_SPEED, speed);
         serviceIntent.putExtra(EdgeLightingService.EXTRA_MODE, mode);
+        serviceIntent.putExtra(EdgeLightingService.EXTRA_AOD_ENABLED, aodEnabled);
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -98,6 +196,7 @@ public class NativeBridgePlugin extends Plugin {
             } else {
                 context.startService(serviceIntent);
             }
+            setEdgeOverlayActive(context, true);
             JSObject ret = new JSObject();
             ret.put("started", true);
             call.resolve(ret);
@@ -110,9 +209,16 @@ public class NativeBridgePlugin extends Plugin {
     public void stopSystemEdgeOverlay(PluginCall call) {
         try {
             Context context = getContext();
+            // Send ACTION_STOP through onStartCommand (not stopService) so the
+            // service can dismiss the AOD activity and clear its state first.
             Intent serviceIntent = new Intent(context, EdgeLightingService.class);
             serviceIntent.setAction(EdgeLightingService.ACTION_STOP);
-            context.stopService(serviceIntent);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceIntent);
+            } else {
+                context.startService(serviceIntent);
+            }
+            setEdgeOverlayActive(context, false);
 
             JSObject ret = new JSObject();
             ret.put("stopped", true);
@@ -122,34 +228,24 @@ public class NativeBridgePlugin extends Plugin {
         }
     }
 
-    private static byte[] patchWebmDurationBytes(byte[] videoBytes, long durationMs) {
-        if (videoBytes == null || videoBytes.length < 32 || durationMs <= 0) {
-            return videoBytes;
+    private static void copyStream(InputStream in, OutputStream out) throws java.io.IOException {
+        byte[] buffer = new byte[32 * 1024];
+        int read;
+        while ((read = in.read(buffer)) != -1) {
+            out.write(buffer, 0, read);
         }
-        try {
-            int limit = Math.min(videoBytes.length - 12, 16384);
-            // 1. Search for existing Duration element (0x44 0x89)
-            for (int i = 0; i < limit; i++) {
-                if (videoBytes[i] == 0x44 && videoBytes[i + 1] == (byte) 0x89) {
-                    byte len = videoBytes[i + 2];
-                    if (len == (byte) 0x84) { // Float32 (4 bytes)
-                        int floatBits = Float.floatToIntBits((float) durationMs);
-                        videoBytes[i + 3] = (byte) ((floatBits >>> 24) & 0xff);
-                        videoBytes[i + 4] = (byte) ((floatBits >>> 16) & 0xff);
-                        videoBytes[i + 5] = (byte) ((floatBits >>> 8) & 0xff);
-                        videoBytes[i + 6] = (byte) (floatBits & 0xff);
-                        return videoBytes;
-                    } else if (len == (byte) 0x88) { // Float64 (8 bytes)
-                        long doubleBits = Double.doubleToLongBits((double) durationMs);
-                        for (int k = 0; k < 8; k++) {
-                            videoBytes[i + 3 + k] = (byte) ((doubleBits >>> (56 - k * 8)) & 0xff);
-                        }
-                        return videoBytes;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return videoBytes;
+        out.flush();
+    }
+
+    private static boolean isWebmHeader(File file) {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] header = new byte[4];
+            int read = fis.read(header);
+            return read == 4 && header[0] == 0x1a && header[1] == 0x45
+                    && header[2] == (byte) 0xdf && header[3] == (byte) 0xa3;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @PluginMethod
@@ -157,7 +253,7 @@ public class NativeBridgePlugin extends Plugin {
         String base64Data = call.getString("base64Data");
         String fileName = call.getString("fileName");
         String mimeType = call.getString("mimeType", "video/mp4");
-        
+
         long durationMs = 0;
         try {
             Double d = call.getDouble("durationMs");
@@ -178,18 +274,34 @@ public class NativeBridgePlugin extends Plugin {
         }
 
         long finalDurationMs = durationMs;
+        String requestedMime = mimeType;
         new Thread(() -> {
+            Context context = getContext();
+            File tempInput = null;
+            File convertedMp4 = null;
+            Uri savedUri = null;
             try {
-                // Remove data:video/...;base64, prefix if present
                 String cleanBase64 = base64Data;
                 if (cleanBase64.contains(",")) {
                     cleanBase64 = cleanBase64.substring(cleanBase64.indexOf(",") + 1);
                 }
-                byte[] videoBytes = Base64.decode(cleanBase64, Base64.DEFAULT);
+                // Decode once to a temp file on disk. The converted MP4 is
+                // streamed out later, so a large video is never held twice in RAM.
+                tempInput = new File(context.getCacheDir(), "save_in_" + System.currentTimeMillis()
+                        + (requestedMime != null && requestedMime.contains("webm") ? ".webm" : ".mp4"));
+                byte[] decoded = Base64.decode(cleanBase64, Base64.DEFAULT);
+                try (FileOutputStream fos = new FileOutputStream(tempInput)) {
+                    fos.write(decoded);
+                    fos.flush();
+                }
+                decoded = null;
 
-                Context context = getContext();
-                Uri savedUri = null;
+                boolean isWebm = isWebmHeader(tempInput)
+                        || (requestedMime != null && requestedMime.contains("webm"))
+                        || fileName.endsWith(".webm");
 
+                // The file that will actually be written to the Gallery.
+                File sourceFile = tempInput;
                 String cleanMime = "video/mp4";
                 String finalFileName = fileName;
                 if (finalFileName.endsWith(".webm")) {
@@ -198,93 +310,111 @@ public class NativeBridgePlugin extends Plugin {
                     finalFileName = finalFileName + ".mp4";
                 }
 
-                // If input is WebM (EBML header 0x1A 0x45 0xDF 0xA3), transcode to universal MP4 with AAC audio!
-                boolean isWebm = (videoBytes.length > 4 && videoBytes[0] == 0x1a && videoBytes[1] == 0x45 && videoBytes[2] == (byte) 0xdf && videoBytes[3] == (byte) 0xa3);
                 if (isWebm) {
+                    // WebM MUST be transcoded to H.264 + AAC first. If transcoding
+                    // fails, reject instead of saving raw WebM bytes as ".mp4" -
+                    // that is what caused silent videos and 1-2s durations on
+                    // WhatsApp / Vivo Gallery / Google Files.
                     try {
-                        File convertedMp4 = UniversalVideoTranscoder.transcodeWebmToMp4(context, videoBytes, finalFileName, finalDurationMs);
-                        if (convertedMp4 != null && convertedMp4.exists() && convertedMp4.length() > 0) {
-                            byte[] mp4Bytes = new byte[(int) convertedMp4.length()];
-                            try (java.io.FileInputStream fis = new java.io.FileInputStream(convertedMp4)) {
-                                int totalRead = 0;
-                                while (totalRead < mp4Bytes.length) {
-                                    int read = fis.read(mp4Bytes, totalRead, mp4Bytes.length - totalRead);
-                                    if (read < 0) break;
-                                    totalRead += read;
-                                }
-                            }
-                            videoBytes = mp4Bytes;
-                            cleanMime = "video/mp4";
-                            convertedMp4.delete();
-                        }
+                        convertedMp4 = UniversalVideoTranscoder.transcodeWebmToMp4(
+                                context, tempInput, finalFileName, finalDurationMs);
                     } catch (Exception transcodeErr) {
-                        Log.w("NativeBridge", "Hardware transcode fallback, applying direct container fix: " + transcodeErr.getMessage());
-                        if (finalDurationMs > 0) {
-                            videoBytes = patchWebmDurationBytes(videoBytes, finalDurationMs);
-                        }
+                        Log.e("NativeBridge", "Video transcode failed, refusing to save raw WebM as MP4: "
+                                + transcodeErr.getMessage());
+                        call.reject("Video conversion failed: " + transcodeErr.getMessage()
+                                + ". Please try exporting again.");
+                        return;
                     }
+                    if (convertedMp4 == null || !convertedMp4.exists() || convertedMp4.length() == 0) {
+                        call.reject("Video conversion failed: no MP4 was produced. Please try exporting again.");
+                        return;
+                    }
+                    sourceFile = convertedMp4;
+                    cleanMime = "video/mp4";
                 }
+
+                final long sourceSize = sourceFile.length();
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     ContentValues values = new ContentValues();
                     values.put(MediaStore.Video.Media.DISPLAY_NAME, finalFileName);
                     values.put(MediaStore.Video.Media.MIME_TYPE, cleanMime);
                     values.put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AuraPulse");
+                    values.put(MediaStore.Video.Media.DATE_TAKEN, System.currentTimeMillis());
                     if (finalDurationMs > 0) {
                         values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
-                        values.put(MediaStore.MediaColumns.DURATION, finalDurationMs);
                     }
                     values.put(MediaStore.Video.Media.IS_PENDING, 1);
 
                     Uri collection = MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
                     savedUri = context.getContentResolver().insert(collection, values);
-
-                    if (savedUri != null) {
-                        try (OutputStream out = context.getContentResolver().openOutputStream(savedUri)) {
-                            if (out != null) {
-                                out.write(videoBytes);
-                                out.flush();
-                            }
-                        }
-                        values.clear();
-                        values.put(MediaStore.Video.Media.IS_PENDING, 0);
-                        if (finalDurationMs > 0) {
-                            values.put(MediaStore.Video.Media.DURATION, finalDurationMs);
-                            values.put(MediaStore.MediaColumns.DURATION, finalDurationMs);
-                        }
-                        context.getContentResolver().update(savedUri, values, null, null);
+                    if (savedUri == null) {
+                        call.reject("Could not create video entry in Gallery.");
+                        return;
                     }
+
+                    try (InputStream in = new FileInputStream(sourceFile);
+                         OutputStream out = context.getContentResolver().openOutputStream(savedUri)) {
+                        if (out == null) {
+                            throw new java.io.IOException("Could not open Gallery output stream");
+                        }
+                        copyStream(in, out);
+                    }
+
+                    // Publish: clear IS_PENDING and write the real duration/size
+                    // in the SAME update, so Gallery / WhatsApp never see a
+                    // half-written file with a 1-2s duration.
+                    ContentValues publish = new ContentValues();
+                    publish.put(MediaStore.Video.Media.IS_PENDING, 0);
+                    if (finalDurationMs > 0) {
+                        publish.put(MediaStore.Video.Media.DURATION, finalDurationMs);
+                    }
+                    publish.put(MediaStore.MediaColumns.SIZE, sourceSize);
+                    context.getContentResolver().update(savedUri, publish, null, null);
+                    // No MediaScannerConnection.scanFile(savedUri.getPath()) here:
+                    // a content:// Uri has no file path, and scanning it is a
+                    // no-op at best. MediaStore already indexes the new entry.
                 } else {
                     File moviesDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "AuraPulse");
                     if (!moviesDir.exists()) {
                         moviesDir.mkdirs();
                     }
                     File file = new File(moviesDir, finalFileName);
-                    try (FileOutputStream fos = new FileOutputStream(file)) {
-                        fos.write(videoBytes);
-                        fos.flush();
+                    try (InputStream in = new FileInputStream(sourceFile);
+                         FileOutputStream fos = new FileOutputStream(file)) {
+                        copyStream(in, fos);
                     }
                     savedUri = Uri.fromFile(file);
                     MediaScannerConnection.scanFile(context, new String[]{file.getAbsolutePath()}, new String[]{cleanMime}, null);
                 }
 
-                // Scan file so Android Gallery indexer updates duration immediately
-                if (savedUri != null) {
-                    MediaScannerConnection.scanFile(context, new String[]{savedUri.getPath()}, new String[]{cleanMime}, null);
-                }
-
+                final Uri resultUri = savedUri;
+                final String resultName = finalFileName;
                 new Handler(Looper.getMainLooper()).post(() -> {
                     Toast.makeText(context, "🎬 Video saved to Gallery / Movies!", Toast.LENGTH_LONG).show();
                 });
 
                 JSObject ret = new JSObject();
                 ret.put("success", true);
-                ret.put("fileName", finalFileName);
-                ret.put("uri", savedUri != null ? savedUri.toString() : "");
+                ret.put("fileName", resultName);
+                ret.put("uri", resultUri != null ? resultUri.toString() : "");
                 call.resolve(ret);
 
             } catch (Exception e) {
+                // Remove the half-written Gallery entry so no broken video remains.
+                if (savedUri != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        context.getContentResolver().delete(savedUri, null, null);
+                    } catch (Exception ignored) {}
+                }
                 call.reject("Error saving video: " + e.getMessage());
+            } finally {
+                if (tempInput != null && tempInput.exists()) {
+                    tempInput.delete();
+                }
+                if (convertedMp4 != null && convertedMp4.exists()) {
+                    convertedMp4.delete();
+                }
             }
         }).start();
     }
