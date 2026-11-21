@@ -198,7 +198,12 @@ export const saveVideoToDevice = async (
       });
       return !!res?.success;
     } catch (err) {
-      console.error('Native video save failed, falling back to download link:', err);
+      // On native Android, a failed native save must return false. The
+      // web <a download> fallback below does nothing inside a WebView, so
+      // falling through to it used to report "success" while no video ever
+      // reached the Gallery.
+      console.error('Native video save failed:', err);
+      return false;
     }
   }
 

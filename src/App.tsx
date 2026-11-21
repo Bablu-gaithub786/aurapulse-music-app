@@ -81,12 +81,15 @@ const convertWebmToMp4OnServer = async (
   filename: string,
   setIsTranscoding: (val: boolean) => void,
   setTranscodeMessage: (msg: string) => void,
-  fallbackSave: (blob: Blob) => void,
+  fallbackSave: (blob: Blob) => Promise<boolean> | boolean | void,
   durationInMs: number = 0
-) => {
+): Promise<boolean> => {
   // If running on Native Android APK or static host, direct device gallery save is used.
   // The WebM blob goes through NativeBridge, which transcodes it to H.264 + AAC
   // MP4 on-device. It is never saved raw as ".mp4" (that caused silent videos).
+  // Returns true ONLY when the video actually reached the Gallery - the
+  // caller must not show "Export successful" before this resolves, because
+  // the native transcode takes seconds after recording stops.
   const isDirectDeviceSave = typeof window !== 'undefined' && (
     isNativeAndroid() ||
     window.location.hostname.includes('github.io') ||
@@ -95,13 +98,18 @@ const convertWebmToMp4OnServer = async (
 
   if (isDirectDeviceSave) {
     console.log(`Direct device/native save detected, transcoding video (${durationInMs}ms) to MP4 for gallery.`);
-    await saveVideoToDevice(webmBlob, filename, 'video/webm', durationInMs);
-    return;
+    setIsTranscoding(true);
+    setTranscodeMessage("Saving video to Gallery...");
+    try {
+      return await saveVideoToDevice(webmBlob, filename, 'video/webm', durationInMs);
+    } finally {
+      setIsTranscoding(false);
+    }
   }
 
   setIsTranscoding(true);
   setTranscodeMessage("Optimizing video stream for WhatsApp & mobile galleries...");
-  
+
   try {
     const formData = new FormData();
     formData.append("video", webmBlob, "recording.webm");
@@ -117,11 +125,13 @@ const convertWebmToMp4OnServer = async (
 
     const mp4Blob = await response.blob();
     const mp4Filename = filename.replace(/\.(webm|mp4)$/i, '') + '.mp4';
-    await saveVideoToDevice(mp4Blob, mp4Filename, 'video/mp4', durationInMs);
+    const saved = await saveVideoToDevice(mp4Blob, mp4Filename, 'video/mp4', durationInMs);
     console.log("Successfully converted WebM to MP4 and saved to gallery.");
+    return saved;
   } catch (error) {
     console.warn("Server conversion unavailable, downloading duration-patched video:", error);
-    fallbackSave(webmBlob);
+    const saved = await fallbackSave(webmBlob);
+    return saved === true;
   } finally {
     setIsTranscoding(false);
   }
@@ -522,7 +532,7 @@ export default function App() {
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.mp4`;
-          await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
+          return saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
         };
 
         fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -556,7 +566,7 @@ export default function App() {
 
           const saveBlob = async (finalBlob: Blob) => {
             const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${Date.now()}.webm`;
-            await saveVideoToDevice(finalBlob, fileName, 'video/webm', durationInMs);
+            return saveVideoToDevice(finalBlob, fileName, 'video/webm', durationInMs);
           };
 
           fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
@@ -710,11 +720,15 @@ export default function App() {
 
         const saveBlob = async (finalBlob: Blob) => {
           const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
-          await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
+          return saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
         };
 
-        fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
-          convertWebmToMp4OnServer(
+        // Show the success modal ONLY after the video is actually saved.
+        // The native transcode takes seconds after recording stops, so the
+        // modal must not appear when the timer ends - the user would check
+        // the Gallery while the file is still being written and find nothing.
+        fixWebmDurationHelper(blob, durationInMs, async (fixedBlob) => {
+          const saved = await convertWebmToMp4OnServer(
             fixedBlob,
             `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
             setIsTranscoding,
@@ -722,6 +736,11 @@ export default function App() {
             saveBlob,
             durationInMs
           );
+          if (saved) {
+            setShowExportSuccessModal(true);
+          } else {
+            alert("Video could not be saved to Gallery. Please try exporting again.");
+          }
         });
       };
 
@@ -795,9 +814,10 @@ export default function App() {
             // Restore normal rendering sizes
             setOptions(prev => ({ ...prev, exportDimensions: undefined }));
             setIsExporting(false);
-            if (!isExportCancelledRef.current) {
-              setShowExportSuccessModal(true);
-            }
+            // Do NOT show the success modal here: recording has only just
+            // stopped, the video is still being transcoded and saved in
+            // onstop. The modal appears from onstop, only if the save
+            // actually succeeded.
           }, 350);
         }
       }, 150);
@@ -828,11 +848,11 @@ export default function App() {
 
           const saveBlob = async (finalBlob: Blob) => {
             const fileName = `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`;
-            await saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
+            return saveVideoToDevice(finalBlob, fileName, finalBlob.type || 'video/webm', durationInMs);
           };
 
-          fixWebmDurationHelper(blob, durationInMs, (fixedBlob) => {
-            convertWebmToMp4OnServer(
+          fixWebmDurationHelper(blob, durationInMs, async (fixedBlob) => {
+            const saved = await convertWebmToMp4OnServer(
               fixedBlob,
               `AuraPulse_Studio_Video_${exportQuality.toUpperCase()}_${ratio.replace(':', '_')}_${Date.now()}.mp4`,
               setIsTranscoding,
@@ -840,6 +860,11 @@ export default function App() {
               saveBlob,
               durationInMs
             );
+            if (saved) {
+              setShowExportSuccessModal(true);
+            } else {
+              alert("Video could not be saved to Gallery. Please try exporting again.");
+            }
           });
         };
 

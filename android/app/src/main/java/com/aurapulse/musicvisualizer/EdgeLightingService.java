@@ -88,12 +88,29 @@ public class EdgeLightingService extends Service {
                 if (aodEnabled) {
                     enableScreenOffAodMode();
                 }
-            } else if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
-                // Unlock / screen-on always ends AOD and resumes the overlay.
+            } else if (Intent.ACTION_USER_PRESENT.equals(action)) {
+                // ONLY unlock ends AOD and resumes the overlay.
+                // ACTION_SCREEN_ON must NOT dismiss the AOD: the AOD itself
+                // wakes the screen (wake lock + setTurnScreenOn), so screen-on
+                // fires right after the AOD appears. Dismissing on screen-on
+                // made the AOD vanish at once, the overlay resume, the screen
+                // time out after 1-2 minutes, and the AOD wake the screen
+                // again - an endless on/off cycle every 1-2 minutes.
                 disableScreenOffAodMode();
                 if (overlayView != null) {
                     overlayView.setVisibility(View.VISIBLE);
                     overlayView.startAnimation();
+                }
+            } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                // Screen turned on while no AOD is showing (e.g. user pressed
+                // power with AOD disabled): show the normal overlay again.
+                // If the AOD is showing, do nothing - it stays on top as a
+                // black screen with edge lights until unlock / tap / Cancel.
+                if (!AodEdgeLightingActivity.isActive() && !aodActive) {
+                    if (overlayView != null) {
+                        overlayView.setVisibility(View.VISIBLE);
+                        overlayView.startAnimation();
+                    }
                 }
             }
         }

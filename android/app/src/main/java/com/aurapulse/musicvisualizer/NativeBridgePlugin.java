@@ -394,26 +394,33 @@ public class NativeBridgePlugin extends Plugin {
                 }
 
                 if (isWebm) {
-                    // WebM MUST be transcoded to H.264 + AAC first. If transcoding
-                    // fails, reject instead of saving raw WebM bytes as ".mp4" -
-                    // that is what caused silent videos and 1-2s durations on
-                    // WhatsApp / Vivo Gallery / Google Files.
+                    // WebM MUST be transcoded to H.264 + AAC first. Saving raw
+                    // WebM bytes as ".mp4" is what caused silent videos and
+                    // 1-2s durations on WhatsApp / Vivo Gallery / Google Files,
+                    // so that is never done. But if the transcode fails on a
+                    // device (missing codec, etc.), the export must not vanish
+                    // silently: fall back to saving the original WebM with its
+                    // honest ".webm" name, so the user still gets a playable
+                    // video with sound in the Gallery.
+                    boolean transcodeOk = false;
                     try {
                         convertedMp4 = UniversalVideoTranscoder.transcodeWebmToMp4(
                                 context, tempInput, finalFileName, finalDurationMs);
+                        transcodeOk = convertedMp4 != null && convertedMp4.exists()
+                                && convertedMp4.length() > 0;
                     } catch (Exception transcodeErr) {
-                        Log.e("NativeBridge", "Video transcode failed, refusing to save raw WebM as MP4: "
+                        Log.e("NativeBridge", "Video transcode failed, falling back to WebM save: "
                                 + transcodeErr.getMessage());
-                        call.reject("Video conversion failed: " + transcodeErr.getMessage()
-                                + ". Please try exporting again.");
-                        return;
                     }
-                    if (convertedMp4 == null || !convertedMp4.exists() || convertedMp4.length() == 0) {
-                        call.reject("Video conversion failed: no MP4 was produced. Please try exporting again.");
-                        return;
+                    if (transcodeOk) {
+                        sourceFile = convertedMp4;
+                        cleanMime = "video/mp4";
+                    } else {
+                        Log.w("NativeBridge", "Saving original WebM as .webm because MP4 transcode failed");
+                        finalFileName = finalFileName.substring(0, finalFileName.length() - 4) + ".webm";
+                        sourceFile = tempInput;
+                        cleanMime = "video/webm";
                     }
-                    sourceFile = convertedMp4;
-                    cleanMime = "video/mp4";
                 }
 
                 final long sourceSize = sourceFile.length();
