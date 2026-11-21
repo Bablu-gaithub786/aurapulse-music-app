@@ -10,6 +10,7 @@ interface NativeBridgePluginInterface {
   stopSystemEdgeOverlay: () => Promise<{ stopped: boolean }>;
   saveVideoToGallery: (options: { base64Data: string; fileName: string; mimeType: string; durationMs?: number }) => Promise<{ success: boolean; fileName: string; uri: string }>;
   saveImageToGallery: (options: { base64Data: string; fileName: string }) => Promise<{ success: boolean; fileName: string; uri: string }>;
+  pickAudioFile: () => Promise<{ dataUrl: string; fileName: string; mimeType: string }>;
 }
 
 const getNativeBridge = (): NativeBridgePluginInterface | null => {
@@ -134,6 +135,24 @@ export const stopSystemEdgeOverlay = async (): Promise<boolean> => {
   } catch (err) {
     console.error('Failed to stop system edge overlay:', err);
     return false;
+  }
+};
+
+// Native song picker: opens the system Files picker (ACTION_OPEN_DOCUMENT
+// in a chooser), never the WebView file input. Use this on Android so a
+// Recorder app set as "Always" for audio files cannot hijack the upload.
+// Returns the picked song as a data URL, or null when cancelled / on web.
+export const pickAudioFile = async (): Promise<{ dataUrl: string; fileName: string; mimeType: string } | null> => {
+  const bridge = getNativeBridge();
+  if (!bridge || typeof bridge.pickAudioFile !== 'function') return null;
+  try {
+    const res = await bridge.pickAudioFile();
+    if (!res?.dataUrl) return null;
+    return res;
+  } catch (err) {
+    // Cancelled by the user, or no file chosen - not an error.
+    console.warn('Audio pick cancelled or failed:', err);
+    return null;
   }
 };
 

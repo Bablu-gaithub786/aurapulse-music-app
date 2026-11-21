@@ -24,6 +24,10 @@ public class AodEdgeLightingActivity extends Activity {
 
     public static final String ACTION_DISMISS_AOD = "com.aurapulse.ACTION_DISMISS_AOD";
     private static AodEdgeLightingActivity currentInstance = null;
+    // Set when the service itself dismisses the AOD (notification Cancel /
+    // screen-on): in that case the activity must NOT ask the service to
+    // resume the overlay, or a Cancel would restart the lights.
+    private static boolean suppressResumeOnDismiss = false;
 
     private EdgeLightingService.EdgeLightView aodView;
     private PowerManager.WakeLock wakeLock;
@@ -47,6 +51,7 @@ public class AodEdgeLightingActivity extends Activity {
 
     public static void dismissIfActive() {
         if (currentInstance != null) {
+            suppressResumeOnDismiss = true;
             currentInstance.dismissAod();
         }
     }
@@ -62,13 +67,34 @@ public class AodEdgeLightingActivity extends Activity {
         Window window = getWindow();
         window.setBackgroundDrawableResource(android.R.color.black);
 
-        // Modern Android API 27+ setShowWhenLocked (safe for lockscreen display without forcing screen wake)
+        // Wake the screen ONCE and keep it on while this AOD is showing.
+        // Without this, the activity is created while the screen is off and
+        // the user sees nothing at all. This is a single wake lock held by
+        // this activity (released on dismiss), not a wake loop: nothing
+        // re-acquires it, and the service never re-launches the activity
+        // while it is already active.
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                wakeLock = pm.newWakeLock(
+                        PowerManager.SCREEN_BRIGHT_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                        "AuraPulse:AodWakeLock");
+                wakeLock.setReferenceCounted(false);
+                wakeLock.acquire();
+            }
+        } catch (Exception ignored) {}
+
+        // Modern Android API 27+ setShowWhenLocked + setTurnScreenOn
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true);
+            setTurnScreenOn(true);
         }
 
-        // WindowManager flags to display over keyguard when screen is already on
+        // WindowManager flags to display over keyguard, turn the screen on
+        // once, and keep it on while the AOD lights are showing.
         int flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
                 | WindowManager.LayoutParams.FLAG_FULLSCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -99,9 +125,8 @@ public class AodEdgeLightingActivity extends Activity {
         setContentView(aodView);
 
         // Register receiver for dismiss events (explicit dismiss or user unlock only).
-        // No wake lock is ever acquired here and FLAG_TURN_SCREEN_ON is never
-        // set: this activity must not wake the screen in a loop. It is shown
-        // once by EdgeLightingService on screen-off, on a pure-black canvas.
+        // The screen is woken exactly once in onCreate above; nothing here
+        // re-wakes it.
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_DISMISS_AOD);
         filter.addAction(Intent.ACTION_USER_PRESENT);
@@ -143,6 +168,27 @@ public class AodEdgeLightingActivity extends Activity {
     }
 
     public void dismissAod() {
+        // If the user tapped the AOD while the screen is on, the normal
+        // overlay was hidden on screen-off, so ask the service to show it
+        // again. Never do this when the service dismissed the AOD itself
+        // (notification Cancel / screen-on), and never when the screen is
+        // off - the lights stay off until the next screen-on.
+        boolean resumeOverlay = !suppressResumeOnDismiss;
+        suppressResumeOnDismiss = false;
+        if (resumeOverlay) {
+            try {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (pm != null && pm.isInteractive()) {
+                    Intent resume = new Intent(this, EdgeLightingService.class);
+                    resume.setAction(EdgeLightingService.ACTION_AOD_DISMISSED);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(resume);
+                    } else {
+                        startService(resume);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
         try {
             if (wakeLock != null && wakeLock.isHeld()) {
                 wakeLock.release();

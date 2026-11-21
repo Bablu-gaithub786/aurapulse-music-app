@@ -1,11 +1,13 @@
 package com.aurapulse.musicvisualizer;
 
 import android.Manifest;
+import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.media.MediaScannerConnection;
 import android.net.Uri;
 import android.os.Build;
@@ -13,11 +15,13 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.util.Base64;
 import android.util.Log;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResult;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
@@ -25,10 +29,12 @@ import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -226,6 +232,82 @@ public class NativeBridgePlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("Failed to stop EdgeLightingService: " + e.getMessage());
+        }
+    }
+
+    // ---- Song upload: native file picker (Files app only) ----
+    // The WebView <input type="file" accept="audio/*"> uses Capacitor's
+    // file chooser, which launches ACTION_GET_CONTENT directly - so if the
+    // user once tapped "Always" on the Recorder app, every upload opens
+    // the Recorder instead of Files. This picker uses ACTION_OPEN_DOCUMENT
+    // wrapped in Intent.createChooser, so Android always shows the system
+    // Files picker and no app default can hijack it.
+    @PluginMethod
+    public void pickAudioFile(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("audio/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                "audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4",
+                "audio/flac", "audio/ogg", "audio/aac", "audio/x-aac"
+        });
+        Intent chooser = Intent.createChooser(intent, "Choose a song");
+        startActivityForResult(call, chooser, "pickAudioFileCallback");
+    }
+
+    @ActivityCallback
+    private void pickAudioFileCallback(PluginCall call, ActivityResult result) {
+        if (result == null || result.getResultCode() != Activity.RESULT_OK
+                || result.getData() == null || result.getData().getData() == null) {
+            call.reject("No file selected");
+            return;
+        }
+        Uri uri = result.getData().getData();
+        try {
+            Context context = getContext();
+            String fileName = "song.mp3";
+            long size = -1;
+            try (Cursor cursor = context.getContentResolver().query(
+                    uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (nameIdx >= 0) {
+                        String n = cursor.getString(nameIdx);
+                        if (n != null && !n.isEmpty()) fileName = n;
+                    }
+                    int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
+                    if (sizeIdx >= 0) size = cursor.getLong(sizeIdx);
+                }
+            }
+            if (size > 25L * 1024 * 1024) {
+                call.reject("File too large. Please pick a song under 25 MB.");
+                return;
+            }
+            String mimeType = context.getContentResolver().getType(uri);
+            if (mimeType == null || mimeType.isEmpty()) mimeType = "audio/mpeg";
+            byte[] bytes;
+            try (InputStream in = context.getContentResolver().openInputStream(uri);
+                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                if (in == null) {
+                    call.reject("Could not read the selected file");
+                    return;
+                }
+                copyStream(in, out);
+                bytes = out.toByteArray();
+            }
+            if (bytes.length > 25L * 1024 * 1024) {
+                call.reject("File too large. Please pick a song under 25 MB.");
+                return;
+            }
+            String dataUrl = "data:" + mimeType + ";base64,"
+                    + Base64.encodeToString(bytes, Base64.NO_WRAP);
+            JSObject ret = new JSObject();
+            ret.put("dataUrl", dataUrl);
+            ret.put("fileName", fileName);
+            ret.put("mimeType", mimeType);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Could not read the selected file: " + e.getMessage());
         }
     }
 

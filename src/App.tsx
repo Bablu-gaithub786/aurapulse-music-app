@@ -63,7 +63,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { patchWebmDuration } from './utils/webmDurationPatcher';
-import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid, isEdgeOverlayActive } from './utils/nativeBridge';
+import { saveVideoToDevice, saveImageToDevice, checkOverlayPermission, requestOverlayPermission, startSystemEdgeOverlay, stopSystemEdgeOverlay, isNativeAndroid, isEdgeOverlayActive, pickAudioFile } from './utils/nativeBridge';
 
 // A battle-tested EBML patcher that guarantees real duration injection into WebM files for WhatsApp & Android
 const fixWebmDurationHelper = async (blob: Blob, durationInMs: number, callback: (fixedBlob: Blob) => void) => {
@@ -1440,8 +1440,25 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => {
+              onClick={async () => {
                 updateOption('audioSource', 'file');
+                // On Android, use the native Files picker. The hidden
+                // <input type="file"> opens the Recorder app if the user
+                // once set it as "Always" for audio files.
+                if (isNativeAndroid()) {
+                  const picked = await pickAudioFile();
+                  if (picked) {
+                    try {
+                      const res = await fetch(picked.dataUrl);
+                      const blob = await res.blob();
+                      const file = new File([blob], picked.fileName, { type: picked.mimeType || 'audio/mpeg' });
+                      handleFileUpload(file);
+                    } catch (e) {
+                      console.warn('Could not load picked song:', e);
+                    }
+                  }
+                  return;
+                }
                 setTimeout(() => {
                   document.getElementById('bottom-audio-uploader')?.click();
                 }, 50);

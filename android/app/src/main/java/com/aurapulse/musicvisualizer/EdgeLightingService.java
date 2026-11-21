@@ -34,6 +34,7 @@ public class EdgeLightingService extends Service {
 
     public static final String ACTION_START = "com.aurapulse.ACTION_START_OVERLAY";
     public static final String ACTION_STOP = "com.aurapulse.ACTION_STOP_OVERLAY";
+    public static final String ACTION_AOD_DISMISSED = "com.aurapulse.ACTION_AOD_DISMISSED";
     public static final String EXTRA_PRESET = "extra_preset";
     public static final String EXTRA_COLOR = "extra_color";
     public static final String EXTRA_THICKNESS = "extra_thickness";
@@ -127,6 +128,17 @@ public class EdgeLightingService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_AOD_DISMISSED.equals(intent.getAction())) {
+            // User tapped the AOD while the screen is on: the normal overlay
+            // was hidden on screen-off, so show it again. The lights stay
+            // ON - this never stops the service.
+            aodActive = false;
+            if (overlayView != null) {
+                overlayView.setVisibility(View.VISIBLE);
+                overlayView.startAnimation();
+            }
+            return START_STICKY;
+        }
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             // Notification "Cancel / Turn Off" pressed: stop everything now.
             disableScreenOffAodMode();
@@ -242,10 +254,12 @@ public class EdgeLightingService extends Service {
 
     private void enableScreenOffAodMode() {
         // Exactly once per screen-off: never re-launch while AOD is already
-        // showing, and never acquire a wake lock / turn the screen on.
-        // AodEdgeLightingActivity uses setShowWhenLocked(true) only, on a
-        // pure-black AMOLED canvas, so there is no infinite wake loop.
-        if (aodActive || AodEdgeLightingActivity.isActive()) {
+        // showing. The guard is only isActive(): aodActive is set by the
+        // service and is not cleared when the user dismisses the AOD by
+        // tapping it, so using it here would block every later screen-off.
+        // The activity itself wakes the screen once (wake lock +
+        // setTurnScreenOn) and holds it while showing; nothing re-wakes it.
+        if (AodEdgeLightingActivity.isActive()) {
             return;
         }
         try {
