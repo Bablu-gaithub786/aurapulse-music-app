@@ -209,15 +209,16 @@ public class NativeBridgePlugin extends Plugin {
     public void stopSystemEdgeOverlay(PluginCall call) {
         try {
             Context context = getContext();
-            // Send ACTION_STOP through onStartCommand (not stopService) so the
-            // service can dismiss the AOD activity and clear its state first.
-            Intent serviceIntent = new Intent(context, EdgeLightingService.class);
-            serviceIntent.setAction(EdgeLightingService.ACTION_STOP);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent);
-            } else {
-                context.startService(serviceIntent);
-            }
+            // Use stopService, NOT startForegroundService with ACTION_STOP.
+            // stopService is a safe no-op when the service is not running,
+            // and App.tsx calls this on every launch when lights are off.
+            // Starting a foreground service just to stop it can crash on
+            // Android 12+ / Vivo (ForegroundServiceDidNotStartInTime) and
+            // was the likely 1-second launch crash. The notification Cancel
+            // button still uses ACTION_STOP via PendingIntent.getService,
+            // and EdgeLightingService.onDestroy() dismisses the AOD and
+            // clears the active flag, so no state is lost.
+            context.stopService(new Intent(context, EdgeLightingService.class));
             setEdgeOverlayActive(context, false);
 
             JSObject ret = new JSObject();
