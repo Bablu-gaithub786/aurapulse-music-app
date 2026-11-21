@@ -216,6 +216,10 @@ public class UniversalVideoTranscoder {
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             long discoveryDeadline = System.currentTimeMillis() + FORMAT_DISCOVERY_TIMEOUT_MS;
 
+            // Note: MediaCodec has no INFO_OUTPUT_END_OF_STREAM constant.
+            // End-of-stream is signalled by BUFFER_FLAG_END_OF_STREAM in the
+            // BufferInfo of a returned output buffer, not by the dequeue code.
+            discovery:
             while ((!videoFormatFound || !audioFormatFound)
                     && System.currentTimeMillis() < discoveryDeadline) {
                 if (!videoFormatFound && videoEncoder != null && videoDecoder != null) {
@@ -226,9 +230,11 @@ public class UniversalVideoTranscoder {
                         videoFormatFound = true;
                         Log.i(TAG, "H.264 Video encoder output format discovered and added to muxer");
                     } else if (outIdx >= 0) {
+                        boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                         videoEncoder.releaseOutputBuffer(outIdx, false);
-                    } else if (outIdx == MediaCodec.INFO_OUTPUT_END_OF_STREAM) {
-                        break;
+                        if (eos) {
+                            break discovery;
+                        }
                     }
                 }
                 if (!audioFormatFound && audioEncoder != null && audioDecoder != null) {
@@ -239,9 +245,11 @@ public class UniversalVideoTranscoder {
                         audioFormatFound = true;
                         Log.i(TAG, "AAC Audio encoder output format discovered and added to muxer");
                     } else if (outIdx >= 0) {
+                        boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                         audioEncoder.releaseOutputBuffer(outIdx, false);
-                    } else if (outIdx == MediaCodec.INFO_OUTPUT_END_OF_STREAM) {
-                        break;
+                        if (eos) {
+                            break discovery;
+                        }
                     }
                 }
                 // If both inputs are exhausted and no format appeared, do not spin forever.
